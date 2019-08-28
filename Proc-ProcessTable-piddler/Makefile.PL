@@ -4,25 +4,28 @@ use warnings;
 use ExtUtils::MakeMaker;
 
 my %WriteMakefileArgs = (
-    NAME             => 'Proc::ProcessTable::piddler',
-    AUTHOR           => q{Zane C. Bowers-Hadley <vvelox@vvelox.net>},
-    VERSION_FROM     => 'lib/Proc/ProcessTable/piddler.pm',
-    ABSTRACT_FROM    => 'lib/Proc/ProcessTable/piddler.pm',
-    LICENSE          => 'artistic_2',
-    MIN_PERL_VERSION => '5.006',
-    CONFIGURE_REQUIRES => {
-        'ExtUtils::MakeMaker' => '0',
-    },
-    TEST_REQUIRES => {
-        'Test::More' => '0',
-    },
-    PREREQ_PM => {
-        #'ABC'              => '1.6',
-        #'Foo::Bar::Module' => '5.0401',
-    },
-    dist  => { COMPRESS => 'gzip -9f', SUFFIX => 'gz', },
-    clean => { FILES => 'Proc-ProcessTable-piddler-*' },
-);
+						 NAME             => 'Proc::ProcessTable::piddler',
+						 AUTHOR           => q{Zane C. Bowers-Hadley <vvelox@vvelox.net>},
+						 VERSION_FROM     => 'lib/Proc/ProcessTable/piddler.pm',
+						 ABSTRACT_FROM    => 'lib/Proc/ProcessTable/piddler.pm',
+						 LICENSE          => 'artistic_2',
+						 MIN_PERL_VERSION => '5.006',
+						 CONFIGURE_REQUIRES => {
+												'ExtUtils::MakeMaker' => '0',
+												},
+						 TEST_REQUIRES => {
+										   'Test::More' => '0',
+										   },
+						 PREREQ_PM => {
+									   'Term::ANSIColor'=>'4.06',
+									   'Text::ANSITable'=>'0.501',
+									   'Getopt::Long'=>'0.0.0',
+									   'Data::Unixish::Apply'=>'1.570',
+									   'Proc::ProcessTable'=>'0.59',
+									   },
+						 dist  => { COMPRESS => 'gzip -9f', SUFFIX => 'gz', },
+						 clean => { FILES => 'Proc-ProcessTable-piddler-*' },
+						 );
 
 # Compatibility with old versions of ExtUtils::MakeMaker
 unless (eval { ExtUtils::MakeMaker->VERSION('6.64'); 1 }) {
@@ -36,10 +39,10 @@ unless (eval { ExtUtils::MakeMaker->VERSION('6.55_03'); 1 }) {
 }
 
 delete $WriteMakefileArgs{CONFIGURE_REQUIRES}
-    unless eval { ExtUtils::MakeMaker->VERSION('6.52'); 1 };
+unless eval { ExtUtils::MakeMaker->VERSION('6.52'); 1 };
 delete $WriteMakefileArgs{MIN_PERL_VERSION}
-    unless eval { ExtUtils::MakeMaker->VERSION('6.48'); 1 };
+unless eval { ExtUtils::MakeMaker->VERSION('6.48'); 1 };
 delete $WriteMakefileArgs{LICENSE}
-    unless eval { ExtUtils::MakeMaker->VERSION('6.31'); 1 };
+unless eval { ExtUtils::MakeMaker->VERSION('6.31'); 1 };
 
 WriteMakefile(%WriteMakefileArgs);
