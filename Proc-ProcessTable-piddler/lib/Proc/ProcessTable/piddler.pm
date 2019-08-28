@@ -6,6 +6,8 @@ use warnings;
 use Proc::ProcessTable;
 use Text::ANSITable;
 use Term::ANSIColor;
+use Proc::ProcessTable::InfoString;
+use Sys::MemInfo qw(totalmem freemem totalswap);
 
 
 =head1 NAME
@@ -46,6 +48,7 @@ sub new{
 						 'BRIGHT_MAGENTA',
 						 'BRIGHT_BLUE'
 						 ],
+				nextColor=>0,
 				timeColors=>[
 							 'GREEN',
 							 'BRIGHT_GREEN',
@@ -70,11 +73,21 @@ sub new{
 				pidColor=>'BRIGHT_CYAN',
 				cpuColor=>'BRIGHT_MAGENTA',
 				memColor=>'BRIGHT_BLUE',
+				zero_time=>1,
+				zero_flt=>1,
+				files=>1,
 				idColors=>[
-							  'WHITE',
-							  'BRIGHT_BLUE',
-							  'MAGENTA',
-							  ],
+						   'WHITE',
+						   'BRIGHT_BLUE',
+						   'MAGENTA',
+						   ],
+				is=>Proc::ProcessTable::InfoString->new,
+				colors=>[
+						 'BRIGHT_YELLOW',
+						 'BRIGHT_CYAN',
+						 'BRIGHT_MAGENTA',
+						 'BRIGHT_BLUE'
+						 ],
 				};
     bless $self;
 
@@ -104,14 +117,33 @@ sub run{
 	my $p = Proc::ProcessTable->new;
 	my $pt = $p->table;
 
+	# figure out what all keys the process table is reporting
 	my @proc_keys=keys( %{ $pt->[0] } );
 	my %proc_keys_hash;
 	foreach my $proc_key ( @proc_keys ){
 		$proc_keys_hash{$proc_key}=1;
 	}
+	# remove the ones we actually use
 	delete( $proc_keys_hash{pctcpu} );
 	delete( $proc_keys_hash{uid} );
 	delete( $proc_keys_hash{pid} );
+	delete( $proc_keys_hash{gid} );
+	delete( $proc_keys_hash{rss} );
+	delete( $proc_keys_hash{state} );
+	delete( $proc_keys_hash{wchan} );
+	delete( $proc_keys_hash{cmndline} );
+	delete( $proc_keys_hash{size} );
+	delete( $proc_keys_hash{time} );
+	if( defined( $proc_keys_hash{pctmem} ) ){
+		delete( $proc_keys_hash{pctmem} );
+	}
+	if( defined( $proc_keys_hash{groups} ) ){
+		delete( $proc_keys_hash{groups} );
+	}
+	if ( defined( $proc_keys_hash{cmdline} ) ){
+		delete( $proc_keys_hash{cmdline} );
+	}
+	@proc_keys=sort(keys( %proc_keys_hash ));
 
 	my @procs;
 	foreach my $proc ( @{ $pt } ){
@@ -125,7 +157,7 @@ sub run{
 	}
 
 	my $toReturn='';
-
+	my $first=1;
 	foreach my $proc ( @procs ){
         my $tb = Text::ANSITable->new;
         $tb->border_style('Default::none_ascii');
@@ -133,14 +165,20 @@ sub run{
 		$tb->show_header(0);
         $tb->set_column_style(0, pad => 0);
         $tb->set_column_style(1, pad => 1);
+		$tb->columns( ['var','val'] );
 
+		#
+		# PID
+		#
 		my @data;
 		push( @data, [
 					  color( $self->{varColor} ).'PID'.color('reset'),
 					  color( $self->{pidColor} ).$proc->pid.color('reset')
 					  ]);
 
-
+		#
+		# UID
+		#
 		my $user=getpwuid($proc->{uid});
 		if ( ! defined( $user ) ) {
 			$user=color( $self->{idColors}[0] ).$proc->{uid}.color('reset');
@@ -154,14 +192,171 @@ sub run{
 
 		push( @data, [
 					  color( $self->{varColor} ).'UID'.color('reset'),
-					  color( $self->{pidColor} ).$user.color('reset')
+					  $user.' '.color('reset')
 					  ]);
 
+		#
+		# GID
+		#
+		my $group=getgrgid($proc->{gid});
+		if ( ! defined( $group ) ) {
+			$group=color( $self->{idColors}[0] ).$proc->{gid}.color('reset');
+		}else{
+			$group=color( $self->{idColors}[0] ).$group.
+			color( $self->{idColors}[1] ).'('.
+			color( $self->{idColors}[2] ).$proc->{gid}.
+			color( $self->{idColors}[1] ).')'
+			.color('reset');
+		}
 
 		push( @data, [
-					  color( $self->{varColor} ).'CPU%'.color('reset'),
-					  color( $self->{pidColor} ).$proc->pctcpu.color('reset')
+					  color( $self->{varColor} ).'GID'.color('reset'),
+					  $group.' '.color('reset')
 					  ]);
+
+		#
+		# Groups
+		#
+		if ( defined( $proc->{groups} ) ){
+			my @groups;
+			foreach my $current_group ( @{ $proc->{groups} } ){
+				$group=getgrgid( $current_group );
+				if ( ! defined( $group ) ) {
+					$group=color( $self->{idColors}[0] ).$current_group.color('reset');
+				}else{
+					$group=color( $self->{idColors}[0] ).$group.
+					color( $self->{idColors}[1] ).'('.
+					color( $self->{idColors}[2] ).$current_group.
+					color( $self->{idColors}[1] ).')'
+					.color('reset');
+				}
+				push( @groups, $group );
+			}
+
+			push( @data, [
+						  color( $self->{varColor} ).'Groups'.color('reset'),
+						  join( ' ', @groups )
+						  ]);
+		}
+
+		#
+		# PCT CPU
+		#
+		push( @data, [
+					  color( $self->{varColor} ).'CPU%'.color('reset'),
+					  color( $self->{valColor} ).$proc->pctcpu.color('reset')
+					  ]);
+
+		#
+		# PCT mem
+		#
+		my $mem;
+		if ( !defined( $proc->{pctmem} ) ) {
+			$mem=($proc->{rss} / totalmem)*100;
+			$mem=sprintf('%.2f', $mem);
+		} else {
+			$mem=sprintf('%.2f', $proc->{pctmem});
+		}
+		push( @data, [
+					  color( $self->{varColor} ).'MEM%'.color('reset'),
+					  color( $self->{valColor} ).$mem.color('reset')
+					  ]);
+
+		#
+		# VSZ
+		#
+		push( @data, [
+					  color( $self->{varColor} ).'VSZ'.color('reset'),
+					  $self->memString( $proc->size, 'vsz' )
+					  ]);
+
+		#
+		# RSS
+		#
+		push( @data, [
+					  color( $self->{varColor} ).'RSS'.color('reset'),
+					  $self->memString( $proc->rss, 'rss' )
+					  ]);
+
+		#
+		# time
+		#
+		push( @data, [
+					  color( $self->{varColor} ).'Time'.color('reset'),
+					  $self->timeString( $proc->time )
+					  ]);
+
+		#
+		# info
+		#
+		push( @data, [
+					  color( $self->{varColor} ).'Info'.color('reset'),
+					  color( $self->{valColor} ).$self->{is}->info( $proc ).color('reset')
+					  ]);
+
+		#
+		# misc ones...
+		#
+		foreach my $key ( @proc_keys ){
+			if ( $proc->{$key} !~ /^$/ ){
+				my $print_it=1;
+				my $value;
+
+				if (
+					( $key =~ /time$/ ) &&
+					( $proc->{$key} =~ /\.0*$/ ) &&
+					( $self->{zero_time} )
+					){
+					$print_it=0;
+				}elsif( $key =~ /time$/ ){
+					$value=$self->timeString( $proc->{$key} );
+				}
+
+				if (
+					( $key =~ /flt$/ ) &&
+					( $proc->{$key} eq 0 ) &&
+					( $self->{zero_flt} )
+					){
+					$print_it=0;
+				}
+
+				if ( $key =~ /^start$/ ){
+					$value=$self->startString( $proc->{start} );
+				}
+
+				if ( !defined( $value ) ){
+					$value=color( $self->{valColor} ).$proc->{$key}.color('reset');
+				}
+
+				if ( $print_it ){
+					push( @data, [
+								  color( $self->{varColor} ).$key.color('reset'),
+								  $value,
+								  ]);
+				}
+			}
+		}
+
+		#
+		# cmndline
+		#
+		if ( $proc->{cmndline} !~ /^$/ ){
+			push( @data, [
+						  color( $self->{varColor} ).'Cmndline'.color('reset'),
+						  color( $self->{processColor} ).$proc->{cmndline}.color('reset')
+						  ]);
+		}
+		
+		#
+		# adds the new item
+		#
+		$tb->add_rows( \@data );
+		if ( $first ){
+			$first=0;
+			$toReturn=$toReturn.$tb->draw;
+		}else{
+			$toReturn=$toReturn."\n\n".$tb->draw;
+		}
 	}
 
 	return $toReturn;
@@ -195,7 +390,7 @@ sub timeString{
 	#nicely format it
 	$hours=~s/\..*//;
 	$minutes=~s/\..*//;
-	$seconds=sprintf('%.f',$seconds);
+	#$seconds=sprintf('%.f',$seconds);
 
 	#this will be returned
 	my $toReturn='';
@@ -269,6 +464,62 @@ sub memString{
 	return $toReturn.color('reset');
 }
 
+=head2 startString
+
+Generates a short time string based on the supplied unix time.
+
+=cut
+
+sub startString{
+	my $self=$_[0];
+	my $startTime=$_[1];
+
+	my ($sec,$min,$hour,$mday,$mon,$year,$wday,$yday,$isdst) = localtime($startTime);
+	my ($csec,$cmin,$chour,$cmday,$cmon,$cyear,$cwday,$cyday,$cisdst) = localtime(time);
+
+	#add the required stuff to make this sane
+	$year += 1900;
+	$cyear += 1900;
+	$mon += 1;
+	$cmon += 1;
+
+	#find the most common one and return it
+	if ( $year ne $cyear ) {
+		return $year.sprintf('%02d', $mon).sprintf('%02d', $mday).'-'.sprintf('%02d', $hour).':'.sprintf('%02d', $min);
+	}
+	if ( $mon ne $cmon ) {
+		return sprintf('%02d', $mon).sprintf('%02d', $mday).'-'.sprintf('%02d', $hour).':'.sprintf('%02d', $min);
+	}
+	if ( $mday ne $cmday ) {
+		return sprintf('%02d', $mday).'-'.sprintf('%02d', $hour).':'.sprintf('%02d', $min);
+	}
+
+	#just return this for anything less
+	return sprintf('%02d', $hour).':'.sprintf('%02d', $min);
+}
+
+=head2 nextColor
+
+Returns the next color.
+
+=cut
+
+sub nextColor{
+	my $self=$_[0];
+
+	my $color;
+
+	if ( defined( $self->{colors}[ $self->{nextColor} ] ) ) {
+		$color=$self->{colors}[ $self->{nextColor} ];
+		$self->{nextColor}++;
+	} else {
+		$self->{nextColor}=0;
+		$color=$self->{colors}[ $self->{nextColor} ];
+		$self->{nextColor}++;
+	}
+
+	return $color;
+}
 
 =head1 AUTHOR
 

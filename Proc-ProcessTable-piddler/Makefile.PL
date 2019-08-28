@@ -10,6 +10,7 @@ my %WriteMakefileArgs = (
 						 ABSTRACT_FROM    => 'lib/Proc/ProcessTable/piddler.pm',
 						 LICENSE          => 'artistic_2',
 						 MIN_PERL_VERSION => '5.006',
+						 INST_SCRIPT => 'bin',
 						 CONFIGURE_REQUIRES => {
 												'ExtUtils::MakeMaker' => '0',
 												},
@@ -22,6 +23,8 @@ my %WriteMakefileArgs = (
 									   'Getopt::Long'=>'0.0.0',
 									   'Data::Unixish::Apply'=>'1.570',
 									   'Proc::ProcessTable'=>'0.59',
+									   'Proc::ProcessTable::InfoString'=>'0.0.1',
+									   'Sys::MemInfo'=>'0.99',
 									   },
 						 dist  => { COMPRESS => 'gzip -9f', SUFFIX => 'gz', },
 						 clean => { FILES => 'Proc-ProcessTable-piddler-*' },

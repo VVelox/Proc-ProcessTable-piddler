@@ -1,0 +1,60 @@
+#!/usr/bin/env perl
+
+use strict;
+use warnings;
+use Getopt::Long;
+use Proc::ProcessTable::piddler;
+
+sub version{
+        print "ncps v. 0.0.0\n";
+	}
+
+sub help{
+        print '
+';
+	}
+
+my $ppp=Proc::ProcessTable::piddler->new;
+
+# defaults
+my $version;
+my $help;
+
+# get the commandline options
+Getopt::Long::Configure ('no_ignore_case');
+Getopt::Long::Configure ('bundling');
+GetOptions(
+		   'h' => \$help,
+		   'help' => \$help,
+		   'v' => \$version,
+		   'version' => \$version,
+		   );
+
+
+# print the version info if requested
+if ( $version ){
+	&version;
+	exit;
+}
+
+if ( $help ){
+	&version;
+	&help;
+	exit;
+}
+
+# real in the list of PIDs
+my @PIDs;
+foreach my $arg ( @ARGV ){
+	my @possibles=split(/\,/, $arg);
+
+	foreach my $pid ( @possibles ){
+		if ( $pid !~ /^[0-9]+$/ ){
+			die $pid." does not appear to be a PID.\n";
+		}
+		push( @PIDs, $pid );
+	}
+}
+
+print $ppp->run( \@PIDs );
+exit 0;
