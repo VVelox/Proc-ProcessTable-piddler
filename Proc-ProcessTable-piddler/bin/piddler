@@ -14,11 +14,13 @@ sub help{
 ';
 	}
 
-my $ppp=Proc::ProcessTable::piddler->new;
-
 # defaults
 my $version;
 my $help;
+my $txt=0,
+my $pipe=0;
+my $unix=0;
+my $vregroot=0;
 
 # get the commandline options
 Getopt::Long::Configure ('no_ignore_case');
@@ -28,6 +30,10 @@ GetOptions(
 		   'help' => \$help,
 		   'v' => \$version,
 		   'version' => \$version,
+		   't' => \$txt,
+		   'P' => \$pipe,
+		   'u' => \$unix,
+		   'r' => \$vregroot,
 		   );
 
 
@@ -55,6 +61,15 @@ foreach my $arg ( @ARGV ){
 		push( @PIDs, $pid );
 	}
 }
+
+my $ppp=Proc::ProcessTable::piddler->new(
+										 {
+										  txt=>$txt,
+										  unix=>$unix,
+										  pipe=>$pipe,
+										  vregroot=>$vregroot,
+										  }
+										 );
 
 print $ppp->run( \@PIDs );
 exit 0;

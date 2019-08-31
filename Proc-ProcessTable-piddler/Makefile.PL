@@ -25,6 +25,7 @@ my %WriteMakefileArgs = (
 									   'Proc::ProcessTable'=>'0.59',
 									   'Proc::ProcessTable::InfoString'=>'0.0.1',
 									   'Sys::MemInfo'=>'0.99',
+									   'Net::Connection::ncnetstat'=>'0.5.0',
 									   },
 						 dist  => { COMPRESS => 'gzip -9f', SUFFIX => 'gz', },
 						 clean => { FILES => 'Proc-ProcessTable-piddler-*' },

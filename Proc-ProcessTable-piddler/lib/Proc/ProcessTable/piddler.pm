@@ -8,7 +8,7 @@ use Text::ANSITable;
 use Term::ANSIColor;
 use Proc::ProcessTable::InfoString;
 use Sys::MemInfo qw(totalmem freemem totalswap);
-
+use Net::Connection::ncnetstat;
 
 =head1 NAME
 
@@ -41,6 +41,11 @@ Initiates the object.
 =cut
 
 sub new{
+	my %args;
+	if (defined($_[1])) {
+		%args= %{$_[1]};
+	}
+
 	my $self = {
 				colors=>[
 						 'BRIGHT_YELLOW',
@@ -67,6 +72,14 @@ sub new{
 							'BRIGHT_RED',
 							'BRIGHT_BLUE'
 							],
+				file_colors=>[
+							  'BRIGHT_YELLOW',
+							  'BRIGHT_CYAN',
+							  'BRIGHT_MAGENTA',
+							  'BRIGHT_BLUE',
+							  'MAGENTA',
+							  'BRIGHT_RED'
+                         ],
 				processColor=>'BRIGHT_RED',
 				varColor=>'GREEN',
 				valColor=>'WHITE',
@@ -88,8 +101,20 @@ sub new{
 						 'BRIGHT_MAGENTA',
 						 'BRIGHT_BLUE'
 						 ],
+				txt=>0,
+				pipe=>0,
+				unix=>0,
+				vregroot=>0,
 				};
     bless $self;
+
+	my @arg_feed=(
+				  'txt', 'pipe', 'unix', 'vregroot'
+				   );
+
+	foreach my $feed ( @arg_feed ){
+		$self->{$feed}=$args{$feed};
+	}
 
 	return $self;
 }
@@ -128,6 +153,7 @@ sub run{
 	delete( $proc_keys_hash{uid} );
 	delete( $proc_keys_hash{pid} );
 	delete( $proc_keys_hash{gid} );
+	delete( $proc_keys_hash{vmsize} );
 	delete( $proc_keys_hash{rss} );
 	delete( $proc_keys_hash{state} );
 	delete( $proc_keys_hash{wchan} );
@@ -346,16 +372,137 @@ sub run{
 						  color( $self->{processColor} ).$proc->{cmndline}.color('reset')
 						  ]);
 		}
-		
+
+		#
+		# gets the open files
+		#
+		my $open_files='';
+		my $pid=$proc->pid;
+		my $output_raw=`lsof -n -l -P -p $pid`;
+		if (
+			( $? eq 0 ) ||
+			(
+			 ( $^O =~ /linux/ ) &&
+			 ( $? eq 256 )
+			 )
+			){
+
+			my $ftb = Text::ANSITable->new;
+			$ftb->border_style('Default::none_ascii');
+			$ftb->color_theme('Default::no_color');
+			$ftb->show_header(1);
+			$ftb->set_column_style(0, pad => 0);
+			$ftb->set_column_style(1, pad => 1);
+			$ftb->set_column_style(2, pad => 0);
+			$ftb->set_column_style(3, pad => 1);
+			$ftb->set_column_style(4, pad => 0);
+			$ftb->columns([
+						   color( $self->{varColor} ).'FD'.color('reset'),
+						   color( $self->{varColor} ).'TYPE'.color('reset'),
+						   color( $self->{varColor} ).'DEVICE'.color('reset'),
+						   color( $self->{varColor} ).'SIZE/OFF'.color('reset'),
+						   color( $self->{varColor} ).'NODE'.color('reset'),
+						   color( $self->{varColor} ).'NAME'.color('reset')
+						 ]);
+
+			my @fdata;
+
+			my @lines=split(/\n/, $output_raw);
+			my $line_int=1;
+			while ( defined( $lines[$line_int] ) ){
+				my $line=substr $lines[$line_int], 10;
+				my @line_split=split(/[\ \t]+/, $line );
+
+				if ( !defined( $line_split[7] )){
+					$line_split[7]='';
+				}
+
+				# checks if it is a line we don't want
+				my $dont_add=0;
+				if (
+					# IP stuff... handled by ncnetstat
+					( $line_split[3] =~ /^IPv/ ) ||
+					# library... spammy... only print if asked
+					(
+					 ( $line_split[2] =~ /^txt$/ ) &&
+					 ( ! $self->{txt} )
+					 ) ||
+					# pipe... spammy... only print if asked
+					(
+					 ( $line_split[3] =~ /^[Pp][Ii][Pp][Ee]$/ ) &&
+					 ( ! $self->{pipe} )
+					 ) ||
+					# unix... spammy... only print if asked
+					(
+					 ( $line_split[3] =~ /^[Uu][Nn][Ii][Xx]$/ ) &&
+					 ( ! $self->{unix} )
+					 ) ||
+					# vreg /....can by spammy with somethings like firefox
+					(
+					 ( $line_split[3] =~ /^[Vv][Rr][Ee][Gg]$/ ) &&
+					 ( $line_split[7] =~ /^\/$/ ) &&
+					 ( ! $self->{vregroot} )
+					 )
+					){
+					$dont_add=1;
+				}
+
+				if ( ! $dont_add ){
+					push( @fdata, [
+								   color( $self->{file_colors}[0] ).$line_split[2].color( 'reset' ),
+								   color( $self->{file_colors}[1] ).$line_split[3].color( 'reset' ),
+								   color( $self->{file_colors}[2] ).$line_split[4].color( 'reset' ),
+								   color( $self->{file_colors}[3] ).$line_split[5].color( 'reset' ),
+								   color( $self->{file_colors}[4] ).$line_split[6].color( 'reset' ),
+								   color( $self->{file_colors}[5] ).$line_split[7].color( 'reset' ),
+								   ]);
+				}
+
+				$line_int++;
+			}
+
+			$ftb->add_rows( \@fdata );
+			$open_files=$ftb->draw;
+		}
+
+		#
+		# handle the netconnection
+		#
+		my $netstat='';
+		my @filters=(
+					 {
+					  type=>'PID',
+					  invert=>0,
+					  args=>{
+							 pids=>[$proc->pid],
+							 }
+					  }
+					 );
+		my $ncnetstat=Net::Connection::ncnetstat->new(
+													  {
+													   ptr=>1,
+													   command=>0,
+													   command_long=>0,
+													   wchan=>0,
+													   pct_show=>0,
+													   no_pid_user=>1,
+													   match=>{
+															   checks=>\@filters,
+															   }
+													   }
+													  );
+		$netstat=$ncnetstat->run;
+
+
 		#
 		# adds the new item
 		#
 		$tb->add_rows( \@data );
 		if ( $first ){
 			$first=0;
-			$toReturn=$toReturn.$tb->draw;
+			$toReturn=$toReturn.$tb->draw.$open_files.$netstat;
 		}else{
-			$toReturn=$toReturn."\n\n".$tb->draw;
+			$toReturn=$toReturn.$open_files."\n\n".$tb->draw;
 		}
 	}
 
