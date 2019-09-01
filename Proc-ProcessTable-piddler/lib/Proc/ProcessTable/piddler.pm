@@ -572,11 +572,12 @@ sub run{
 						push( @final_fdata, \@{ $line } );
 					}
 				}
+				$ftb->add_rows( \@final_fdata );
 			}else{
-				@final_fdata=@data;
+				$ftb->add_rows( \@fdata );
 			}
 
-			$ftb->add_rows( \@final_fdata );
+
 			$open_files=$ftb->draw;
 		}
 
