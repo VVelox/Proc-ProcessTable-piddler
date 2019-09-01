@@ -21,6 +21,7 @@ my $txt=0,
 my $pipe=0;
 my $unix=0;
 my $vregroot=0;
+my $dont_dedup=0;
 
 # get the commandline options
 Getopt::Long::Configure ('no_ignore_case');
@@ -34,6 +35,7 @@ GetOptions(
 		   'P' => \$pipe,
 		   'u' => \$unix,
 		   'r' => \$vregroot,
+		   'd' => \$dont_dedup,
 		   );
 
 
@@ -68,6 +70,7 @@ my $ppp=Proc::ProcessTable::piddler->new(
 										  unix=>$unix,
 										  pipe=>$pipe,
 										  vregroot=>$vregroot,
+										  dont_dedup=>$dont_dedup,
 										  }
 										 );
 

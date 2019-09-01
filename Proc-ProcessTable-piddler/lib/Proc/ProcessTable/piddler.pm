@@ -105,11 +105,12 @@ sub new{
 				pipe=>0,
 				unix=>0,
 				vregroot=>0,
+				dont_dedup=>0,
 				};
     bless $self;
 
 	my @arg_feed=(
-				  'txt', 'pipe', 'unix', 'vregroot'
+				  'txt', 'pipe', 'unix', 'vregroot', 'dont_dedup'
 				   );
 
 	foreach my $feed ( @arg_feed ){
@@ -407,6 +408,10 @@ sub run{
 
 			my @fdata;
 
+			#
+			my %rw_filehandles;
+			my %r_filehandles;
+			my %w_filehandles;
 			my @lines=split(/\n/, $output_raw);
 			my $line_int=1;
 			while ( defined( $lines[$line_int] ) ){
@@ -447,21 +452,131 @@ sub run{
 					$dont_add=1;
 				}
 
-				if ( ! $dont_add ){
+				# begin deduping
+				my $name= color( $self->{file_colors}[5] ).$line_split[7].color( 'reset' );
+				if ( ! $self->{dont_dedup} ){
+					if (
+						( $line_split[3] =~ /[Vv][Rr][Ee][Gg]/ ) ||
+						( $line_split[3] =~ /[Vv][Dd][Ii][Dd]/ ) ||
+						( $line_split[3] =~ /[Vv][Cc][Hh][Rr]/ )
+						) {
+						if (
+							( $line_split[2] =~ /u/ ) ||
+							( $line_split[2] =~ /rw/ ) ||
+							( $line_split[2] =~ /wr/ )
+							) {
+							if (! defined( $rw_filehandles{ $name } ) ) {
+								$rw_filehandles{ $name } = 1;
+							} else {
+								$rw_filehandles{ $name }++;
+							}
+						} elsif (
+								 ( $line_split[2] !~ /u/ ) ||
+								 ( $line_split[2] =~ /r/ )
+								 ) {
+							if (! defined( $r_filehandles{ $name } ) ) {
+								$r_filehandles{ $name } = 1;
+							} else {
+								$r_filehandles{ $name }++;
+							}
+						} elsif (
+								 ( $line_split[2] !~ /u/ ) ||
+								 ( $line_split[2] =~ /w/ )
+								 ) {
+							if (! defined( $w_filehandles{ $name } ) ) {
+								$w_filehandles{ $name } = 1;
+							} else {
+								$w_filehandles{ $name }++;
+							}
+						}
+					}
+				}
+
+				if ( ! $dont_add ) {
 					push( @fdata, [
 								   color( $self->{file_colors}[0] ).$line_split[2].color( 'reset' ),
 								   color( $self->{file_colors}[1] ).$line_split[3].color( 'reset' ),
 								   color( $self->{file_colors}[2] ).$line_split[4].color( 'reset' ),
 								   color( $self->{file_colors}[3] ).$line_split[5].color( 'reset' ),
 								   color( $self->{file_colors}[4] ).$line_split[6].color( 'reset' ),
-								   color( $self->{file_colors}[5] ).$line_split[7].color( 'reset' ),
+								   $name,
 								   ]);
 				}
 
 				$line_int++;
 			}
 
-			$ftb->add_rows( \@fdata );
+			# finalize deduping
+			my @final_fdata;
+			if ( ! $self->{dont_dedup} ){
+				my %rw_dedup;
+				my %r_dedup;
+				my %w_dedup;
+				foreach my $line ( @fdata ){
+					if (
+						( $line->[1] =~ /[Vv][Rr][Ee][Gg]/ ) ||
+						( $line->[1] =~ /[Vv][Dd][Ii][Dd]/ ) ||
+						( $line->[1] =~ /[Vv][Cc][Hh][Rr]/ )
+						){
+						my $add_line=1;
+						if (
+							( $line->[0] =~ /u/ ) ||
+							( $line->[0] =~ /rw/ ) ||
+							( $line->[0] =~ /wr/ )
+							) {
+							if( defined( $rw_dedup{ $line->[5] } ) ){
+								$add_line=0;
+							}else{
+								if ($rw_filehandles{ $line->[5] } > 1){
+									$line->[0]=$line->[0].'+';
+								}
+								$rw_dedup{ $line->[5] } = 1;
+							}
+						} elsif (
+								 ( $line->[0] !~ /u/ ) ||
+								 ( $line->[0] =~ /r/ )
+								 ) {
+							if( defined( $r_dedup{ $line->[5] } ) ){
+								$add_line=0;
+							}else{
+								if ($r_filehandles{ $line->[5] } > 1){
+									$line->[0]=$line->[0].'+';
+								}
+								$r_dedup{ $line->[5] } = 1;
+							}
+						} elsif (
+								 ( $line->[0] !~ /u/ ) ||
+								 ( $line->[0] =~ /w/ )
+								 ) {
+							if( defined( $w_dedup{ $line->[5] } ) ){
+								$add_line=0;
+							}else{
+								if ($w_filehandles{ $line->[5] } > 1){
+									$line->[0]=$line->[0].'+';
+								}
+								$w_dedup{ $line->[5] } = 1;
+							}
+						}
+
+						if ( $add_line ){
+							push( @final_fdata, [
+												 $line->[0],
+												 $line->[1],
+												 $line->[2],
+												 $line->[3],
+												 $line->[4],
+												 $line->[5],
+												 ]);
+						}
+					}else{
+						push( @final_fdata, \@{ $line } );
+					}
+				}
+			}else{
+				@final_fdata=@data;
+			}
+
+			$ftb->add_rows( \@final_fdata );
 			$open_files=$ftb->draw;
 		}
 
