@@ -1,4 +1,7 @@
 Revision history for Proc-ProcessTable-piddler
 
+0.1.0	 2019-09-03/05:20
+		 - Add NO_COLOR support.
+
 0.0.0	 2019-09-03/04:10
 		 - Initial release.

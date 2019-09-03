@@ -16,11 +16,11 @@ Proc::ProcessTable::piddler - Display all process table, open files, and network
 
 =head1 VERSION
 
-Version 0.0.0
+Version 0.1.0
 
 =cut
 
-our $VERSION = '0.0.0';
+our $VERSION = '0.1.0';
 
 
 =head1 SYNOPSIS

@@ -6,7 +6,7 @@ use Getopt::Long;
 use Proc::ProcessTable::piddler;
 
 sub version{
-        print "piddler v. 0.0.0\n";
+        print "piddler v. 0.1.0\n";
 	}
 
 sub help{
