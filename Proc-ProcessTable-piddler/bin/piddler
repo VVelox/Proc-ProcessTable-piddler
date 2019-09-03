@@ -17,13 +17,15 @@ sub help{
 -v        Print the version info.
 --version Print the version info.
 
+-a        Do show a_inodes.
 -d        Do not dedup.
+-f        Do show FIFOs.
 -n        Do not resolve PTR addresses.
 --nc      Disable color.
--p        Do not show pipes.
--r        Do not show show VREG / files.
--t        Do not show shared libraries.
--u        Do not show unix sockets.
+-p        Do show pipes.
+-r        Do show show VREG / files.
+-t        Do show shared libraries.
+-u        Do show unix sockets.
 ';
 	}
 
@@ -37,6 +39,8 @@ my $vregroot=0;
 my $dont_dedup=0;
 my $dont_resolv=0;
 my $no_color=0;
+my $a_inode=0;
+my $fifo=0;
 
 # get the commandline options
 Getopt::Long::Configure ('no_ignore_case');
@@ -53,6 +57,8 @@ GetOptions(
 		   'd' => \$dont_dedup,
 		   'n' => \$dont_resolv,
 		   'nc' => \$no_color,
+		   'f' => \$fifo,
+		   'a' => \$a_inode,
 		   );
 
 # print the version info if requested
@@ -119,6 +125,8 @@ my $ppp=Proc::ProcessTable::piddler->new(
 										  txt=>$txt,
 										  unix=>$unix,
 										  pipe=>$pipe,
+										  a_inode=>$a_inode,
+										  fifo=>$fifo,
 										  vregroot=>$vregroot,
 										  dont_dedup=>$dont_dedup,
 										  dont_resolv=>$dont_resolv,

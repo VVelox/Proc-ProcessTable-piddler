@@ -179,11 +179,14 @@ sub new{
 				vregroot=>0,
 				dont_dedup=>0,
 				dont_resolv=>0,
+				fifo=>0,
+				a_inode=>0,
 				};
     bless $self;
 
 	my @arg_feed=(
-				  'txt', 'pipe', 'unix', 'vregroot', 'dont_dedup', 'dont_resolv'
+				  'txt', 'pipe', 'unix', 'vregroot', 'dont_dedup', 'dont_resolv',
+				  'fifo', 'a_inore'
 				   );
 
 	foreach my $feed ( @arg_feed ){
@@ -521,6 +524,16 @@ sub run{
 					(
 					 ( $line_split[3] =~ /^[Uu][Nn][Ii][Xx]$/ ) &&
 					 ( ! $self->{unix} )
+					 ) ||
+					# fifo... spammy with elasticsearch and the like... only print if asked...
+					(
+					 ( $line_split[3] =~ /^[Ff][Ii][Ff][Oo]$/ ) &&
+					 ( ! $self->{fifo} )
+					 ) ||
+					# a_inode... spammy with elasticsearch and the like... only print if asked...
+					(
+					 ( $line_split[3] =~ /^a\_inode$/ ) &&
+					 ( ! $self->{a_inode} )
 					 ) ||
 					# vreg /....can by spammy with somethings like firefox
 					(
