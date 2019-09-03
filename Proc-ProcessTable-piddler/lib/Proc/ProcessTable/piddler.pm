@@ -495,6 +495,7 @@ sub run{
 			my %rw_filehandles;
 			my %r_filehandles;
 			my %w_filehandles;
+			my %mem_filehandles;
 			my @lines=split(/\n/, $output_raw);
 			my $line_int=1;
 			while ( defined( $lines[$line_int] ) ){
@@ -550,6 +551,7 @@ sub run{
 				if ( ! $self->{dont_dedup} ){
 					if (
 						( $line_split[3] =~ /[Vv][Rr][Ee][Gg]/ ) ||
+						( $line_split[3] =~ /[Rr][Ee][Gg]/ ) ||
 						( $line_split[3] =~ /[Vv][Dd][Ii][Dd]/ ) ||
 						( $line_split[3] =~ /[Vv][Cc][Hh][Rr]/ )
 						) {
@@ -581,6 +583,14 @@ sub run{
 							} else {
 								$w_filehandles{ $name }++;
 							}
+						}elsif (
+								( $line_split[2] =~ /mem/ )
+								){
+							if (! defined( $mem_filehandles{ $name } ) ) {
+								$mem_filehandles{ $name } = 1;
+							} else {
+								$mem_filehandles{ $name }++;
+							}
 						}
 					}
 				}
@@ -605,9 +615,11 @@ sub run{
 				my %rw_dedup;
 				my %r_dedup;
 				my %w_dedup;
+				my %mem_dedup;
 				foreach my $line ( @fdata ){
 					if (
 						( $line->[1] =~ /[Vv][Rr][Ee][Gg]/ ) ||
+						( $line->[1] =~ /[Rr][Ee][Gg]/ ) ||
 						( $line->[1] =~ /[Vv][Dd][Ii][Dd]/ ) ||
 						( $line->[1] =~ /[Vv][Cc][Hh][Rr]/ )
 						){
@@ -649,6 +661,13 @@ sub run{
 								}
 								$w_dedup{ $line->[5] } = 1;
 							}
+						}elsif(
+							   ( $line->[0] =~ /mem/ )
+							   ){
+							if ($mem_filehandles{ $line->[5] } > 1){
+								$line->[0]=$line->[0].'+';
+							}
+							$mem_dedup{ $line->[5] } = 1;
 						}
 
 						if ( $add_line ){
