@@ -3,7 +3,7 @@
 Display all process table, open files, and network connections for a PID.
 
 
-![piddler](pidder.png)
+![piddler](piddler.png)
 
 # Command Line Options
 ```
