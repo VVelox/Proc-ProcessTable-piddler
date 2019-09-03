@@ -19,6 +19,7 @@ sub help{
 
 -d        Do not dedup.
 -n        Do not resolve PTR addresses.
+--nc      Disable color.
 -p        Do not show pipes.
 -r        Do not show show VREG / files.
 -t        Do not show shared libraries.
@@ -35,6 +36,7 @@ my $unix=0;
 my $vregroot=0;
 my $dont_dedup=0;
 my $dont_resolv=0;
+my $no_color=0;
 
 # get the commandline options
 Getopt::Long::Configure ('no_ignore_case');
@@ -50,6 +52,7 @@ GetOptions(
 		   'r' => \$vregroot,
 		   'd' => \$dont_dedup,
 		   'n' => \$dont_resolv,
+		   'nc' => \$no_color,
 		   );
 
 # print the version info if requested
@@ -101,6 +104,15 @@ if ( defined( $ENV{PIDDLER_dont_dedup} ) ){
 if ( defined( $ENV{PIDDLER_dont_resolv} ) ){
 	$dont_resolv = $dont_resolv ^ $ENV{PIDDLER_dont_resolv};
 }
+# same for the no color
+if ( defined( $ENV{NO_COLOR} ) ){
+        $no_color = $no_color ^ 1;
+}
+# disable the color if requested
+if ( $no_color ){
+        $ENV{ANSI_COLORS_DISABLED}=1;
+}
+
 
 my $ppp=Proc::ProcessTable::piddler->new(
 										 {
@@ -132,7 +144,11 @@ Do not dedup.
 
 =head2 -n
 
-Do not resolve PTR addresses.
+Do not resolve PTR addresses
+
+=head2 --nc
+
+Disable color..
 
 =head2 -p
 
@@ -154,6 +170,10 @@ Do not show unix sockets.
 
 These are used for XORing the corresponding
 flags.
+
+=head2 NO_COLOR
+
+If set to 1, color will be disabled.
 
 =head2 PIDDLER_txt
 
