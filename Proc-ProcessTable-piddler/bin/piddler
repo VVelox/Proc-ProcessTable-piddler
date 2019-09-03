@@ -6,12 +6,23 @@ use Getopt::Long;
 use Proc::ProcessTable::piddler;
 
 sub version{
-        print "ncps v. 0.0.0\n";
+        print "piddler v. 0.0.0\n";
 	}
 
 sub help{
         print '
 
+-h        Print the help.
+--help    Print the help.
+-v        Print the version info.
+--version Print the version info.
+
+-d        Do not dedup.
+-n        Do not resolve PTR addresses.
+-p        Do not show pipes.
+-r        Do not show show VREG / files.
+-t        Do not show shared libraries.
+-u        Do not show unix sockets.
 ';
 	}
 
@@ -66,6 +77,31 @@ foreach my $arg ( @ARGV ){
 	}
 }
 
+# XOR the -t if needed
+if ( defined( $ENV{PIDDLER_txt} ) ){
+	$txt = $txt ^ $ENV{PIDDLER_txt};
+}
+# XOR the -p if needed
+if ( defined( $ENV{PIDDLER_pipe} ) ){
+	$pipe = $pipe ^ $ENV{PIDDLER_pipe};
+}
+# XOR the -u if needed
+if ( defined( $ENV{PIDDLER_pipe} ) ){
+	$unix = $unix ^ $ENV{PIDDLER_unix};
+}
+# XOR the -r if needed
+if ( defined( $ENV{PIDDLER_vregroot} ) ){
+	$vregroot = $vregroot ^ $ENV{PIDDLER_vregroot};
+}
+# XOR the -d if needed
+if ( defined( $ENV{PIDDLER_dont_dedup} ) ){
+	$dont_dedup = $dont_dedup ^ $ENV{PIDDLER_dont_dedup};
+}
+# XOR the -n if needed
+if ( defined( $ENV{PIDDLER_dont_resolv} ) ){
+	$dont_resolv = $dont_resolv ^ $ENV{PIDDLER_dont_resolv};
+}
+
 my $ppp=Proc::ProcessTable::piddler->new(
 										 {
 										  txt=>$txt,
@@ -79,3 +115,82 @@ my $ppp=Proc::ProcessTable::piddler->new(
 
 print $ppp->run( \@PIDs );
 exit 0;
+
+=head1 NAME
+
+piddler - Display all process table, open files, and network connections for a PID.
+
+=head1 SYNOPSIS
+
+piddler [B<-d>] [B<-n>] [B<-p>] [B<-r>] [B<-r>] [B<-t>] [B<-u>]
+
+=head1 FLAGS
+
+=head2 -d
+
+Do not dedup.
+
+=head2 -n
+
+Do not resolve PTR addresses.
+
+=head2 -p
+
+Do not show pipes.
+
+=head2 -r
+
+Do not show show VREG / files.
+
+=head2 -t
+
+Do not show shared libraries.
+
+=head2 -u
+
+Do not show unix sockets.
+
+=head1 ENVIROMENTAL VARIABLES
+
+These are used for XORing the corresponding
+flags.
+
+=head2 PIDDLER_txt
+
+If set to 1, libraries will not be shown.
+
+=head2 PIDDLER_pipe
+
+If set to 1, pipes will not be shown.
+
+=head2 PIDDLER_unix
+
+If set to 1, unix socket will not be shown.
+
+=head2 PIDDLER_vregroot
+
+If set to 1, VREG / will not be shown.
+
+=head2 PIDDLER_dont_dedup
+
+If set to 1, duplicate file handles are removed.
+
+=head2 PIDDLER_dont_resolv
+
+If set to 1, PTR addresses will not be resolved for
+network connections.
+
+=head1 FILE HANDLE DEDUPING
+
+By default it checks if file handles are open in the same
+mode more than once. If it finds one of these + is appended
+to the value in the FD column.
+
+The following are also RW filehandles.
+
+   u
+   uw
+   ur
+
+=cut
+

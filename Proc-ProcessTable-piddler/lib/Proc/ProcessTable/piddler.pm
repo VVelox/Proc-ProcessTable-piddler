@@ -12,7 +12,7 @@ use Net::Connection::ncnetstat;
 
 =head1 NAME
 
-Proc::ProcessTable::piddler - 
+Proc::ProcessTable::piddler - Display all process table, open files, and network connections for a PID.
 
 =head1 VERSION
 
@@ -27,16 +27,88 @@ our $VERSION = '0.0.0';
 
     use Proc::ProcessTable::piddler;
 
-    my $piddler = Proc::ProcessTable::piddler->new();
-    ...
+    # skip over the less useful stuff by default for less spammy output
+    my $args={
+              txt=>0,
+              unix=>0,
+              pipe=>0,
+              vregroot=>0,
+              dont_dedup=>0,
+              dont_resolv=>0,
+              };
+
+    my $piddler = Proc::ProcessTable::piddler->new( $args );
+    
+    print $piddler->run( [ 0, 1432 ] );
 
 =head1 METHODS
 
-=sub new
+=head2 new
 
 Initiates the object.
 
-    my $piddler = Proc::ProcessTable::piddler->new();
+One argument is taken and that is a option hash reference
+of options.
+
+    my $args={
+              txt=>0,
+              unix=>0,
+              pipe=>0,
+              vregroot=>0,
+              dont_dedup=>0,
+              dont_resolv=>0,
+              };
+    
+    my $piddler = Proc::ProcessTable::piddler->new( $args );
+
+=head3 args hash
+
+=head4 dont_dedup
+
+Don't dedup the file descriptor list.
+
+When deduping a list it checks if a file is open in
+rw, r, or w, only showing it once for any of thsoe modes.
+Any file with more than one open FD of that mode will have
++ appended value in the FD volume.
+
+The modes below are all also RW and considered that.
+
+    u
+    ur
+    uw
+
+Defaults to 0, false.
+
+=head4 dont_resolv
+
+Don't resolve PTR addresses.
+
+Defaults to 0, false.
+
+=head4 pipe
+
+Print pipes.
+
+Defaults to 0, false.
+
+=head4 txt
+
+Print the linked libraries used by the binary.
+
+Defaults to 0, false.
+
+=head4 unix
+
+Print unix sockets.
+
+Defaults to 0, false.
+
+=head4 vregroot
+
+Show VREG entries for /.
+
+Defaults to 0, false.
 
 =cut
 
@@ -122,6 +194,13 @@ sub new{
 }
 
 =head2 run
+
+This runs it and returns a string.
+
+One option is taken and that is a array ref of PIDs
+to do.
+
+    print $piddler->run( [ 0, 1432 ] );
 
 =cut
 
