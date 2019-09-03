@@ -548,7 +548,10 @@ sub run{
 
 				# begin deduping
 				my $name= color( $self->{file_colors}[5] ).$line_split[7].color( 'reset' );
-				if ( ! $self->{dont_dedup} ){
+				if (
+					( ! $self->{dont_dedup} ) &&
+					( ! $dont_add )
+					){
 					if (
 						( $line_split[3] =~ /[Vv][Rr][Ee][Gg]/ ) ||
 						( $line_split[3] =~ /[Rr][Ee][Gg]/ ) ||
