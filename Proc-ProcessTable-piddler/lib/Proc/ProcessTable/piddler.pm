@@ -106,11 +106,12 @@ sub new{
 				unix=>0,
 				vregroot=>0,
 				dont_dedup=>0,
+				dont_resolv=>0,
 				};
     bless $self;
 
 	my @arg_feed=(
-				  'txt', 'pipe', 'unix', 'vregroot', 'dont_dedup'
+				  'txt', 'pipe', 'unix', 'vregroot', 'dont_dedup', 'dont_resolv'
 				   );
 
 	foreach my $feed ( @arg_feed ){
@@ -594,9 +595,13 @@ sub run{
 							 }
 					  }
 					 );
+		my $ptr=1;
+		if ( $self->{dont_resolv} ){
+			$ptr=0;
+		}
 		my $ncnetstat=Net::Connection::ncnetstat->new(
 													  {
-													   ptr=>1,
+													   ptr=>$ptr,
 													   command=>0,
 													   command_long=>0,
 													   wchan=>0,

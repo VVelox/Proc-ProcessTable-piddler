@@ -11,6 +11,7 @@ sub version{
 
 sub help{
         print '
+
 ';
 	}
 
@@ -22,6 +23,7 @@ my $pipe=0;
 my $unix=0;
 my $vregroot=0;
 my $dont_dedup=0;
+my $dont_resolv=0;
 
 # get the commandline options
 Getopt::Long::Configure ('no_ignore_case');
@@ -32,12 +34,12 @@ GetOptions(
 		   'v' => \$version,
 		   'version' => \$version,
 		   't' => \$txt,
-		   'P' => \$pipe,
+		   'p' => \$pipe,
 		   'u' => \$unix,
 		   'r' => \$vregroot,
 		   'd' => \$dont_dedup,
+		   'n' => \$dont_resolv,
 		   );
-
 
 # print the version info if requested
 if ( $version ){
@@ -71,6 +73,7 @@ my $ppp=Proc::ProcessTable::piddler->new(
 										  pipe=>$pipe,
 										  vregroot=>$vregroot,
 										  dont_dedup=>$dont_dedup,
+										  dont_resolv=>$dont_resolv,
 										  }
 										 );
 
