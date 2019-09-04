@@ -16,11 +16,11 @@ Proc::ProcessTable::piddler - Display all process table, open files, and network
 
 =head1 VERSION
 
-Version 0.1.0
+Version 0.2.0
 
 =cut
 
-our $VERSION = '0.1.0';
+our $VERSION = '0.2.0';
 
 
 =head1 SYNOPSIS
@@ -195,6 +195,7 @@ sub new{
 						 'BRIGHT_MAGENTA',
 						 'BRIGHT_BLUE'
 						 ],
+				envrion=>'BRIGHT_MAGENTA',
 				txt=>0,
 				pipe=>0,
 				unix=>0,
@@ -209,7 +210,7 @@ sub new{
 
 	my @arg_feed=(
 				  'txt', 'pipe', 'unix', 'vregroot', 'dont_dedup', 'dont_resolv',
-				  'fifo', 'a_inore'
+				  'fifo', 'a_inore', 'memreglib'
 				   );
 
 	foreach my $feed ( @arg_feed ){
@@ -443,6 +444,13 @@ sub run{
 					$print_it=0;
 				}elsif( $key =~ /time$/ ){
 					$value=$self->timeString( $proc->{$key} );
+				}
+
+				if ( $key =~ /^environ$/ ){
+					$value=join( color( $self->{envrion} ).','.color('reset') , @{ $proc->{envrion} } );
+					if ( !defined( $value ) ){
+						$value='';
+					}
 				}
 
 				if (

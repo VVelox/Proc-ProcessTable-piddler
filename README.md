@@ -26,7 +26,7 @@ Unless set to defined ands set to 1, these will default to 0.
 | Variable |  Description  |
 | -------- | ---------------- |
 | NO_COLOR | If set to 1, color will be disabled. |
-| PIDDLER_txt | If set to 1, libraries will not be shown. |
+| PIDDLER_txt | If set to 1, libraries with the TXT type will not be shown. |
 | PIDDLER_pipe | If set to 1, pipes will not be shown. |
 | PIDDLER_unix | If set to 1, unix socket will not be shown. |
 | PIDDLER_vregroot | If set to 1, VREG / will not be shown. |
