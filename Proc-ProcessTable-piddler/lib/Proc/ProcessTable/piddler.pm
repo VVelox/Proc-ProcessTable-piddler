@@ -447,7 +447,7 @@ sub run{
 				}
 
 				if ( $key =~ /^environ$/ ){
-					$value=join( color( $self->{environ} ).','.color('reset') , @{ $proc->{environ} } );
+					$value=join( color( $self->{environ} ).', '.color('reset') , @{ $proc->{environ} } );
 					if ( !defined( $value ) ){
 						$value='';
 					}
