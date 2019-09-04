@@ -561,8 +561,8 @@ sub run{
 					 (
 					  ( $line_split[7] =~ /\.so$/ ) ||
 					  ( $line_split[7] =~ /\.so\.[0-9]$/ ) ||
-					  ( $line_split[7] =~ /\.so\.[0-9]\.[0-9]$/ ) ||
-					  ( $line_split[7] =~ /\.so\.[0-9]\.[0-9]\.[0-9]$/ ) ||
+					  ( $line_split[7] =~ /\.so\.[0-9]+\.[0-9]+$/ ) ||
+					  ( $line_split[7] =~ /\.so\.[0-9]+\.[0-9]+\.[0-9]+$/ ) ||
 					  ( $line_split[7] =~ /\.jar$/ )
 					  ) &&
 					 ( ! $self->{memreglib} )
