@@ -195,7 +195,7 @@ sub new{
 						 'BRIGHT_MAGENTA',
 						 'BRIGHT_BLUE'
 						 ],
-				envrion=>'BRIGHT_MAGENTA',
+				environ=>'BRIGHT_MAGENTA',
 				txt=>0,
 				pipe=>0,
 				unix=>0,
@@ -447,7 +447,7 @@ sub run{
 				}
 
 				if ( $key =~ /^environ$/ ){
-					$value=join( color( $self->{envrion} ).','.color('reset') , @{ $proc->{envrion} } );
+					$value=join( color( $self->{environ} ).','.color('reset') , @{ $proc->{environ} } );
 					if ( !defined( $value ) ){
 						$value='';
 					}
