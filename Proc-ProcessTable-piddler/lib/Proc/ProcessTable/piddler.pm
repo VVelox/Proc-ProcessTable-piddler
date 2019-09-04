@@ -63,6 +63,12 @@ of options.
 
 =head3 args hash
 
+=head4 a_inode
+
+Print a_inode types.
+
+Defaults to 0, false.
+
 =head4 dont_dedup
 
 Don't dedup the file descriptor list.
@@ -85,6 +91,22 @@ Defaults to 0, false.
 Don't resolve PTR addresses.
 
 Defaults to 0, false.
+
+=head4 fifo
+
+Print FIFOs.
+
+Defaults to 0, false.
+
+=head4 memreglib
+
+Prints memory mappaed libraries that show are of type REG.
+
+The following are used to match libraries.
+
+    /\.[0-9]+$/
+    /\.[0-9]+\.[0-9$/
+    /\.jar/
 
 =head4 pipe
 
@@ -181,6 +203,7 @@ sub new{
 				dont_resolv=>0,
 				fifo=>0,
 				a_inode=>0,
+				memreglib=>0,
 				};
     bless $self;
 
@@ -530,6 +553,17 @@ sub run{
 					(
 					 ( $line_split[3] =~ /^[Ff][Ii][Ff][Oo]$/ ) &&
 					 ( ! $self->{fifo} )
+					 ) ||
+					# memory mapped libraries with REG type....
+					# spammy.... ES tends to have lots of these
+					(
+					 ( $line_split[3] =~ /^[Rr][Ee][Gg]$/ ) &&
+					 (
+					  ( $line_split[7] =~ /\.[0-9]$/ ) ||
+					  ( $line_split[7] =~ /\.[0-9]\.[0-9]$/ ) ||
+					  ( $line_split[7] =~ /\.jar$/ )
+					  ) &&
+					 ( ! $self->{memreglib} )
 					 ) ||
 					# a_inode... spammy with elasticsearch and the like... only print if asked...
 					(
