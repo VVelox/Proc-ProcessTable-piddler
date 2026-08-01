@@ -7,7 +7,7 @@ use Proc::ProcessTable;
 use Text::ANSITable;
 use Term::ANSIColor;
 use Proc::ProcessTable::InfoString;
-use Sys::MemInfo qw(totalmem freemem totalswap);
+use Sys::MemInfo qw(totalmem);
 use Net::Connection::ncnetstat;
 
 =head1 NAME
@@ -38,7 +38,7 @@ our $VERSION = '0.2.0';
               };
 
     my $piddler = Proc::ProcessTable::piddler->new( $args );
-    
+
     print $piddler->run( [ 0, 1432 ] );
 
 =head1 METHODS
@@ -58,7 +58,7 @@ of options.
               dont_dedup=>0,
               dont_resolv=>0,
               };
-    
+
     my $piddler = Proc::ProcessTable::piddler->new( $args );
 
 =head3 args hash
@@ -74,9 +74,9 @@ Defaults to 0, false.
 Don't dedup the file descriptor list.
 
 When deduping a list it checks if a file is open in
-rw, r, or w, only showing it once for any of thsoe modes.
+rw, r, or w, only showing it once for any of those modes.
 Any file with more than one open FD of that mode will have
-+ appended value in the FD volume.
++ appended to the value in the FD column.
 
 The modes below are all also RW and considered that.
 
@@ -100,13 +100,17 @@ Defaults to 0, false.
 
 =head4 memreglib
 
-Prints memory mappaed libraries that show are of type REG.
+Print memory mapped libraries that are of the type REG.
 
 The following are used to match libraries.
 
-    /\.[0-9]+$/
-    /\.[0-9]+\.[0-9$/
-    /\.jar/
+    /\.so$/
+    /\.so\.[0-9]+$/
+    /\.so\.[0-9]+\.[0-9]+$/
+    /\.so\.[0-9]+\.[0-9]+\.[0-9]+$/
+    /\.jar$/
+
+Defaults to 0, false.
 
 =head4 pipe
 
@@ -189,12 +193,6 @@ sub new{
 						   'MAGENTA',
 						   ],
 				is=>Proc::ProcessTable::InfoString->new,
-				colors=>[
-						 'BRIGHT_YELLOW',
-						 'BRIGHT_CYAN',
-						 'BRIGHT_MAGENTA',
-						 'BRIGHT_BLUE'
-						 ],
 				environ=>'BRIGHT_MAGENTA',
 				txt=>0,
 				pipe=>0,
@@ -210,11 +208,13 @@ sub new{
 
 	my @arg_feed=(
 				  'txt', 'pipe', 'unix', 'vregroot', 'dont_dedup', 'dont_resolv',
-				  'fifo', 'a_inore', 'memreglib'
+				  'fifo', 'a_inode', 'memreglib'
 				   );
 
 	foreach my $feed ( @arg_feed ){
-		$self->{$feed}=$args{$feed};
+		if ( defined( $args{$feed} ) ){
+			$self->{$feed}=$args{$feed};
+		}
 	}
 
 	return $self;
@@ -249,6 +249,10 @@ sub run{
 
 	my $p = Proc::ProcessTable->new;
 	my $pt = $p->table;
+
+	if ( !defined( $pt->[0] ) ){
+		return '';
+	}
 
 	# figure out what all keys the process table is reporting
 	my @proc_keys=keys( %{ $pt->[0] } );
@@ -386,7 +390,12 @@ sub run{
 		#
 		my $mem;
 		if ( !defined( $proc->{pctmem} ) ) {
-			$mem=($proc->{rss} / totalmem)*100;
+			my $total_mem=totalmem;
+			if ( $total_mem > 0 ){
+				$mem=($proc->{rss} / $total_mem)*100;
+			}else{
+				$mem=0;
+			}
 			$mem=sprintf('%.2f', $mem);
 		} else {
 			$mem=sprintf('%.2f', $proc->{pctmem});
@@ -432,13 +441,25 @@ sub run{
 		# misc ones...
 		#
 		foreach my $key ( @proc_keys ){
-			if ( $proc->{$key} !~ /^$/ ){
+			if (
+				( defined( $proc->{$key} ) ) &&
+				( $proc->{$key} !~ /^$/ )
+				){
 				my $print_it=1;
 				my $value;
 
+				# anything that is entirely zero, be it 0, 0.0, or the like
+				my $is_zero=0;
+				if (
+					( $proc->{$key} =~ /^[0-9]+(\.[0-9]+)?$/ ) &&
+					( $proc->{$key} == 0 )
+					){
+					$is_zero=1;
+				}
+
 				if (
 					( $key =~ /time$/ ) &&
-					( $proc->{$key} =~ /\.0*$/ ) &&
+					( $is_zero ) &&
 					( $self->{zero_time} )
 					){
 					$print_it=0;
@@ -446,16 +467,16 @@ sub run{
 					$value=$self->timeString( $proc->{$key} );
 				}
 
-				if ( $key =~ /^environ$/ ){
+				if (
+					( $key =~ /^environ$/ ) &&
+					( ref( $proc->{environ} ) eq 'ARRAY' )
+					){
 					$value=join( color( $self->{environ} ).', '.color('reset') , @{ $proc->{environ} } );
-					if ( !defined( $value ) ){
-						$value='';
-					}
 				}
 
 				if (
 					( $key =~ /flt$/ ) &&
-					( $proc->{$key} eq 0 ) &&
+					( $is_zero ) &&
 					( $self->{zero_flt} )
 					){
 					$print_it=0;
@@ -481,7 +502,10 @@ sub run{
 		#
 		# cmndline
 		#
-		if ( $proc->{cmndline} !~ /^$/ ){
+		if (
+			( defined( $proc->{cmndline} ) ) &&
+			( $proc->{cmndline} !~ /^$/ )
+			){
 			push( @data, [
 						  color( $self->{varColor} ).'Cmndline'.color('reset'),
 						  color( $self->{processColor} ).$proc->{cmndline}.color('reset')
@@ -495,10 +519,10 @@ sub run{
 		my $pid=$proc->pid;
 		my $output_raw=`lsof -n -l -P -p $pid`;
 		if (
-			( $? eq 0 ) ||
+			( $? == 0 ) ||
 			(
 			 ( $^O =~ /linux/ ) &&
-			 ( $? eq 256 )
+			 ( $? == 256 )
 			 )
 			){
 
@@ -528,62 +552,115 @@ sub run{
 			my %w_filehandles;
 			my %mem_filehandles;
 			my @lines=split(/\n/, $output_raw);
-			my $line_int=1;
-			while ( defined( $lines[$line_int] ) ){
-				my $line=substr $lines[$line_int], 10;
-				my @line_split=split(/[\ \t]+/, $line );
 
-				if ( !defined( $line_split[7] )){
-					$line_split[7]='';
+			# lsof pads its columns out to fit the widest value in this
+			# run, so where each one starts and stops may only be worked
+			# out from the header of this batch of output. Offsets are
+			# used instead of splitting on whitespace as the width of the
+			# COMMAND column varies with the command name, DEVICE may
+			# overflow into the padding to the left of it, and NAME may
+			# contain whitespace.
+			my $header_int=0;
+			while (
+				   ( defined( $lines[$header_int] ) ) &&
+				   ( $lines[$header_int] !~ /^COMMAND[\ \t]/ )
+				   ){
+				$header_int++;
+			}
+			my @header_columns;
+			if ( defined( $lines[$header_int] ) ){
+				while ( $lines[$header_int] =~ /(\S+)/g ){
+					push( @header_columns, { start=>$-[1], end=>$+[1] } );
 				}
+			}
+
+			# The columns of interest, counted back from NAME as it is
+			# always the last one. FD is not given a offset of its own as
+			# the access and lock characters are printed past the end of
+			# that column, placing it in the same region as TYPE.
+			my $last_column=$#header_columns;
+			my ( $user_end, $type_end, $device_end, $size_end, $node_end, $name_start );
+			if ( $last_column >= 6 ){
+				$user_end=$header_columns[ $last_column - 6 ]{end};
+				$type_end=$header_columns[ $last_column - 4 ]{end};
+				$device_end=$header_columns[ $last_column - 3 ]{end};
+				$size_end=$header_columns[ $last_column - 2 ]{end};
+				$node_end=$header_columns[ $last_column - 1 ]{end};
+				$name_start=$header_columns[ $last_column ]{start};
+			}
+
+			my $line_int=$header_int + 1;
+			while (
+				   ( defined( $name_start ) ) &&
+				   ( defined( $lines[$line_int] ) )
+				   ){
+				my $line=$lines[$line_int];
+
+				my ( $fd, $type )=split( /[\ \t]+/, $self->_column( $line, $user_end, $type_end ) );
+				if ( !defined( $fd ) ){
+					$fd='';
+				}
+				if ( !defined( $type ) ){
+					$type='';
+				}
+				my $device=$self->_column( $line, $type_end, $device_end );
+				my $size_off=$self->_column( $line, $device_end, $size_end );
+				my $node=$self->_column( $line, $size_end, $node_end );
+				my $file_name=$self->_column( $line, $name_start );
+
+				# lsof appends the file system, device, or the like to
+				# the name for some types, which is not wanted when
+				# matching on the name below
+				my $match_name=$file_name;
+				$match_name=~s/[\ \t]+\([^\)]*\)$//;
 
 				# checks if it is a line we don't want
 				my $dont_add=0;
 				if (
 					# IP stuff... handled by ncnetstat
-					( $line_split[3] =~ /^IPv/ ) ||
+					( $type =~ /^IPv/ ) ||
 					# library... spammy... only print if asked
 					(
-					 ( $line_split[2] =~ /^txt$/ ) &&
+					 ( $fd =~ /^txt$/ ) &&
 					 ( ! $self->{txt} )
 					 ) ||
 					# pipe... spammy... only print if asked
 					(
-					 ( $line_split[3] =~ /^[Pp][Ii][Pp][Ee]$/ ) &&
+					 ( $type =~ /^[Pp][Ii][Pp][Ee]$/ ) &&
 					 ( ! $self->{pipe} )
 					 ) ||
 					# unix... spammy... only print if asked
 					(
-					 ( $line_split[3] =~ /^[Uu][Nn][Ii][Xx]$/ ) &&
+					 ( $type =~ /^[Uu][Nn][Ii][Xx]$/ ) &&
 					 ( ! $self->{unix} )
 					 ) ||
 					# fifo... spammy with elasticsearch and the like... only print if asked...
 					(
-					 ( $line_split[3] =~ /^[Ff][Ii][Ff][Oo]$/ ) &&
+					 ( $type =~ /^[Ff][Ii][Ff][Oo]$/ ) &&
 					 ( ! $self->{fifo} )
 					 ) ||
 					# memory mapped libraries with REG type....
 					# spammy.... ES tends to have lots of these
 					(
-					 ( $line_split[3] =~ /^[Rr][Ee][Gg]$/ ) &&
+					 ( $type =~ /^[Rr][Ee][Gg]$/ ) &&
 					 (
-					  ( $line_split[7] =~ /\.so$/ ) ||
-					  ( $line_split[7] =~ /\.so\.[0-9]$/ ) ||
-					  ( $line_split[7] =~ /\.so\.[0-9]+\.[0-9]+$/ ) ||
-					  ( $line_split[7] =~ /\.so\.[0-9]+\.[0-9]+\.[0-9]+$/ ) ||
-					  ( $line_split[7] =~ /\.jar$/ )
+					  ( $match_name =~ /\.so$/ ) ||
+					  ( $match_name =~ /\.so\.[0-9]+$/ ) ||
+					  ( $match_name =~ /\.so\.[0-9]+\.[0-9]+$/ ) ||
+					  ( $match_name =~ /\.so\.[0-9]+\.[0-9]+\.[0-9]+$/ ) ||
+					  ( $match_name =~ /\.jar$/ )
 					  ) &&
 					 ( ! $self->{memreglib} )
 					 ) ||
 					# a_inode... spammy with elasticsearch and the like... only print if asked...
 					(
-					 ( $line_split[3] =~ /^a\_inode$/ ) &&
+					 ( $type =~ /^a\_inode$/ ) &&
 					 ( ! $self->{a_inode} )
 					 ) ||
 					# vreg /....can by spammy with somethings like firefox
 					(
-					 ( $line_split[3] =~ /^[Vv][Rr][Ee][Gg]$/ ) &&
-					 ( $line_split[7] =~ /^\/$/ ) &&
+					 ( $type =~ /^[Vv][Rr][Ee][Gg]$/ ) &&
+					 ( $match_name =~ /^\/$/ ) &&
 					 ( ! $self->{vregroot} )
 					 )
 					){
@@ -591,48 +668,40 @@ sub run{
 				}
 
 				# begin deduping
-				my $name= color( $self->{file_colors}[5] ).$line_split[7].color( 'reset' );
+				my $name= color( $self->{file_colors}[5] ).$file_name.color( 'reset' );
 				if (
 					( ! $self->{dont_dedup} ) &&
 					( ! $dont_add )
 					){
 					if (
-						( $line_split[3] =~ /[Vv][Rr][Ee][Gg]/ ) ||
-						( $line_split[3] =~ /[Rr][Ee][Gg]/ ) ||
-						( $line_split[3] =~ /[Vv][Dd][Ii][Dd]/ ) ||
-						( $line_split[3] =~ /[Vv][Cc][Hh][Rr]/ )
+						( $type =~ /[Vv][Rr][Ee][Gg]/ ) ||
+						( $type =~ /[Rr][Ee][Gg]/ ) ||
+						( $type =~ /[Vv][Dd][Ii][Dd]/ ) ||
+						( $type =~ /[Vv][Cc][Hh][Rr]/ )
 						) {
 						if (
-							( $line_split[2] =~ /u/ ) ||
-							( $line_split[2] =~ /rw/ ) ||
-							( $line_split[2] =~ /wr/ )
+							( $fd =~ /u/ ) ||
+							( $fd =~ /rw/ ) ||
+							( $fd =~ /wr/ )
 							) {
 							if (! defined( $rw_filehandles{ $name } ) ) {
 								$rw_filehandles{ $name } = 1;
 							} else {
 								$rw_filehandles{ $name }++;
 							}
-						} elsif (
-								 ( $line_split[2] !~ /u/ ) ||
-								 ( $line_split[2] =~ /r/ )
-								 ) {
+						} elsif ( $fd =~ /r/ ) {
 							if (! defined( $r_filehandles{ $name } ) ) {
 								$r_filehandles{ $name } = 1;
 							} else {
 								$r_filehandles{ $name }++;
 							}
-						} elsif (
-								 ( $line_split[2] !~ /u/ ) ||
-								 ( $line_split[2] =~ /w/ )
-								 ) {
+						} elsif ( $fd =~ /w/ ) {
 							if (! defined( $w_filehandles{ $name } ) ) {
 								$w_filehandles{ $name } = 1;
 							} else {
 								$w_filehandles{ $name }++;
 							}
-						}elsif (
-								( $line_split[2] =~ /mem/ )
-								){
+						}else{
 							if (! defined( $mem_filehandles{ $name } ) ) {
 								$mem_filehandles{ $name } = 1;
 							} else {
@@ -644,11 +713,11 @@ sub run{
 
 				if ( ! $dont_add ) {
 					push( @fdata, [
-								   color( $self->{file_colors}[0] ).$line_split[2].color( 'reset' ),
-								   color( $self->{file_colors}[1] ).$line_split[3].color( 'reset' ),
-								   color( $self->{file_colors}[2] ).$line_split[4].color( 'reset' ),
-								   color( $self->{file_colors}[3] ).$line_split[5].color( 'reset' ),
-								   color( $self->{file_colors}[4] ).$line_split[6].color( 'reset' ),
+								   color( $self->{file_colors}[0] ).$fd.color( 'reset' ),
+								   color( $self->{file_colors}[1] ).$type.color( 'reset' ),
+								   color( $self->{file_colors}[2] ).$device.color( 'reset' ),
+								   color( $self->{file_colors}[3] ).$size_off.color( 'reset' ),
+								   color( $self->{file_colors}[4] ).$node.color( 'reset' ),
 								   $name,
 								   ]);
 				}
@@ -684,10 +753,7 @@ sub run{
 								}
 								$rw_dedup{ $line->[5] } = 1;
 							}
-						} elsif (
-								 ( $line->[0] !~ /u/ ) ||
-								 ( $line->[0] =~ /r/ )
-								 ) {
+						} elsif ( $line->[0] =~ /r/ ) {
 							if( defined( $r_dedup{ $line->[5] } ) ){
 								$add_line=0;
 							}else{
@@ -696,10 +762,7 @@ sub run{
 								}
 								$r_dedup{ $line->[5] } = 1;
 							}
-						} elsif (
-								 ( $line->[0] !~ /u/ ) ||
-								 ( $line->[0] =~ /w/ )
-								 ) {
+						} elsif ( $line->[0] =~ /w/ ) {
 							if( defined( $w_dedup{ $line->[5] } ) ){
 								$add_line=0;
 							}else{
@@ -708,13 +771,15 @@ sub run{
 								}
 								$w_dedup{ $line->[5] } = 1;
 							}
-						}elsif(
-							   ( $line->[0] =~ /mem/ )
-							   ){
-							if ($mem_filehandles{ $line->[5] } > 1){
-								$line->[0]=$line->[0].'+';
+						}else{
+							if( defined( $mem_dedup{ $line->[5] } ) ){
+								$add_line=0;
+							}else{
+								if ($mem_filehandles{ $line->[5] } > 1){
+									$line->[0]=$line->[0].'+';
+								}
+								$mem_dedup{ $line->[5] } = 1;
 							}
-							$mem_dedup{ $line->[5] } = 1;
 						}
 
 						if ( $add_line ){
@@ -779,13 +844,41 @@ sub run{
 		$tb->add_rows( \@data );
 		if ( $first ){
 			$first=0;
-			$toReturn=$toReturn.$tb->draw.$open_files.$netstat;
 		}else{
-			$toReturn=$toReturn.$open_files."\n\n".$tb->draw;
+			$toReturn=$toReturn."\n\n";
 		}
+		$toReturn=$toReturn.$tb->draw.$open_files.$netstat;
 	}
 
 	return $toReturn;
+}
+
+#
+# Pulls a column out of a line of lsof output using the offsets worked
+# out from the header and trims the padding off of it. If no end offset
+# is given, everything from the start offset on is returned, which is
+# what is wanted for NAME as it is the last column and may contain
+# whitespace.
+#
+sub _column{
+	my $self=$_[0];
+	my $line=$_[1];
+	my $start=$_[2];
+	my $end=$_[3];
+
+	my $value='';
+	if ( length( $line ) > $start ){
+		if ( defined( $end ) ){
+			$value=substr( $line, $start, $end - $start );
+		}else{
+			$value=substr( $line, $start );
+		}
+	}
+
+	$value=~s/^[\ \t]+//;
+	$value=~s/[\ \t]+$//;
+
+	return $value;
 }
 
 =head2 timeString
@@ -798,25 +891,20 @@ sub timeString{
 	my $self=$_[0];
 	my $time=$_[1];
 
+	if ( !defined( $time ) ){
+		$time=0;
+	}
+
 	if ( $^O =~ /^linux$/ ) {
 		$time=$time/1000000;
 	}
 
-	my $hours=0;
-	if ( $time >= 3600 ) {
-		$hours = $time / 3600;
-	}
-	my $loSeconds = $time % 3600;
-	my $minutes=0;
-	if ( $time >= 60 ) {
-		$minutes = $loSeconds / 60;
-	}
-	my $seconds = $loSeconds % 60;
+	# the fractional part is not wanted and % would quietly drop it anyways
+	$time=int( $time );
 
-	#nicely format it
-	$hours=~s/\..*//;
-	$minutes=~s/\..*//;
-	#$seconds=sprintf('%.f',$seconds);
+	my $hours = int( $time / 3600 );
+	my $minutes = int( ( $time % 3600 ) / 60 );
+	my $seconds = $time % 60;
 
 	#this will be returned
 	my $toReturn='';
@@ -832,12 +920,17 @@ sub timeString{
 		$toReturn=color($self->{timeColors}->[2]).$hours.':';
 	}
 
-	#process the minutes bit
+	#process the minutes bit, zero padding it if it follows the hours
 	if (
 		( $hours > 0 ) ||
 		( $minutes > 0 )
 		) {
+		if ( $hours > 0 ){
+			$minutes=sprintf('%02d', $minutes);
+		}
 		$toReturn=$toReturn.color( $self->{timeColors}->[1] ). $minutes.':';
+
+		$seconds=sprintf('%02d', $seconds);
 	}
 
 	$toReturn=$toReturn.color( $self->{timeColors}->[0] ).$seconds.color('reset');
@@ -856,6 +949,10 @@ sub memString{
 	my $mem=$_[1];
 	my $type=$_[2];
 
+	if ( !defined( $mem ) ){
+		$mem=0;
+	}
+
 	my $toReturn='';
 
 	if ( $mem < '10000' ) {
@@ -865,6 +962,7 @@ sub memString{
 			 ( $mem < '1000000' )
 			 ) {
 		$mem=$mem/1000;
+		$mem=sprintf('%.3f', $mem);
 
 		$toReturn=color( $self->{$type.'Colors'}[0] ).$mem.
 		color( $self->{$type.'Colors'}[3] ).'k';
@@ -910,13 +1008,13 @@ sub startString{
 	$cmon += 1;
 
 	#find the most common one and return it
-	if ( $year ne $cyear ) {
+	if ( $year != $cyear ) {
 		return $year.sprintf('%02d', $mon).sprintf('%02d', $mday).'-'.sprintf('%02d', $hour).':'.sprintf('%02d', $min);
 	}
-	if ( $mon ne $cmon ) {
+	if ( $mon != $cmon ) {
 		return sprintf('%02d', $mon).sprintf('%02d', $mday).'-'.sprintf('%02d', $hour).':'.sprintf('%02d', $min);
 	}
-	if ( $mday ne $cmday ) {
+	if ( $mday != $cmday ) {
 		return sprintf('%02d', $mday).'-'.sprintf('%02d', $hour).':'.sprintf('%02d', $min);
 	}
 
@@ -992,9 +1090,6 @@ L<https://metacpan.org/release/Proc-ProcessTable-piddler>
 L<https://github.com/VVelox/Proc-ProcessTable-piddler>
 
 =back
-
-
-=head1 ACKNOWLEDGEMENTS
 
 
 =head1 LICENSE AND COPYRIGHT

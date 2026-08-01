@@ -24,7 +24,7 @@ sub help{
 -n        Do not resolve PTR addresses.
 --nc      Disable color.
 -p        Show pipes.
--r        Show show VREG / files.
+-r        Show VREG / files.
 -t        Show shared libraries.
 -u        Show unix sockets.
 ';
@@ -33,7 +33,7 @@ sub help{
 # defaults
 my $version;
 my $help;
-my $txt=0,
+my $txt=0;
 my $pipe=0;
 my $unix=0;
 my $vregroot=0;
@@ -91,47 +91,54 @@ foreach my $arg ( @ARGV ){
 
 # XOR the -t if needed
 if ( defined( $ENV{PIDDLER_txt} ) ){
-	$txt = $txt ^ $ENV{PIDDLER_txt};
+	$txt = $txt ^ ( $ENV{PIDDLER_txt} ? 1 : 0 );
 }
 # XOR the -p if needed
 if ( defined( $ENV{PIDDLER_pipe} ) ){
-	$pipe = $pipe ^ $ENV{PIDDLER_pipe};
+	$pipe = $pipe ^ ( $ENV{PIDDLER_pipe} ? 1 : 0 );
 }
 # XOR the -u if needed
-if ( defined( $ENV{PIDDLER_pipe} ) ){
-	$unix = $unix ^ $ENV{PIDDLER_unix};
+if ( defined( $ENV{PIDDLER_unix} ) ){
+	$unix = $unix ^ ( $ENV{PIDDLER_unix} ? 1 : 0 );
 }
 # XOR the -r if needed
 if ( defined( $ENV{PIDDLER_vregroot} ) ){
-	$vregroot = $vregroot ^ $ENV{PIDDLER_vregroot};
+	$vregroot = $vregroot ^ ( $ENV{PIDDLER_vregroot} ? 1 : 0 );
 }
 # XOR the -m if needed
 if ( defined( $ENV{PIDDLER_memreglib} ) ){
-	$memreglib = $memreglib ^ $ENV{PIDDLER_memreglib};
+	$memreglib = $memreglib ^ ( $ENV{PIDDLER_memreglib} ? 1 : 0 );
 }
 # XOR the -a if needed
 if ( defined( $ENV{PIDDLER_a_inode} ) ){
-	$a_inode = $a_inode ^ $ENV{PIDDLER_a_inode};
+	$a_inode = $a_inode ^ ( $ENV{PIDDLER_a_inode} ? 1 : 0 );
 }
 # XOR the -f if needed
 if ( defined( $ENV{PIDDLER_fifo} ) ){
-	$fifo = $fifo ^ $ENV{PIDDLER_fifo};
+	$fifo = $fifo ^ ( $ENV{PIDDLER_fifo} ? 1 : 0 );
 }
 # XOR the -d if needed
 if ( defined( $ENV{PIDDLER_dont_dedup} ) ){
-	$dont_dedup = $dont_dedup ^ $ENV{PIDDLER_dont_dedup};
+	$dont_dedup = $dont_dedup ^ ( $ENV{PIDDLER_dont_dedup} ? 1 : 0 );
 }
 # XOR the -n if needed
 if ( defined( $ENV{PIDDLER_dont_resolv} ) ){
-	$dont_resolv = $dont_resolv ^ $ENV{PIDDLER_dont_resolv};
+	$dont_resolv = $dont_resolv ^ ( $ENV{PIDDLER_dont_resolv} ? 1 : 0 );
 }
-# same for the no color
-if ( defined( $ENV{NO_COLOR} ) ){
+# same for the no color, which per the NO_COLOR spec is any non-empty value
+if (
+	( defined( $ENV{NO_COLOR} ) ) &&
+	( $ENV{NO_COLOR} ne '' )
+	){
         $no_color = $no_color ^ 1;
 }
 # disable the color if requested
 if ( $no_color ){
         $ENV{ANSI_COLORS_DISABLED}=1;
+}else{
+        # Term::ANSIColor drops the color for any defined NO_COLOR, so it
+        # has to go for the XOR above to be able to turn the color back on
+        delete( $ENV{NO_COLOR} );
 }
 
 
@@ -158,7 +165,11 @@ piddler - Display all process table, open files, and network connections for a P
 
 =head1 SYNOPSIS
 
-piddler [B<-a>] [B<-d>] [B<-f>] [B<-m>] [B<-n>] [B<-p>] [B<-r>] [B<-r>] [B<-t>] [B<-u>]
+piddler [B<-a>] [B<-d>] [B<-f>] [B<-m>] [B<-n>] [B<--nc>] [B<-p>] [B<-r>] [B<-t>] [B<-u>] <PID>[,<PID>...]
+
+piddler [B<-h>|B<--help>]
+
+piddler [B<-v>|B<--version>]
 
 =head1 FLAGS
 
@@ -202,51 +213,56 @@ Show shared libraries.
 
 Show unix sockets.
 
-=head1 ENVIROMENTAL VARIABLES
+=head1 ENVIRONMENTAL VARIABLES
 
-These are used for XORing the corresponding
-flags.
+These are used for XORing the corresponding flags. So setting
+one to 1 has the same effect as passing the flag, and passing
+the flag as well XORs it back off.
 
 =head2 NO_COLOR
 
-If set to 1, color will be disabled.
+If set to a non-empty value, color will be disabled, the same
+as B<--nc>.
 
 =head2 PIDDLER_a_inode
 
-If set to 1, a_inode types will be shown.
+If set to 1, a_inode types will be shown, the same as B<-a>.
 
 =head2 PIDDLER_fifo
 
-If set to 1, FIFOs will not be shown.
+If set to 1, FIFOs will be shown, the same as B<-f>.
 
 =head2 PIDDLER_memreglib
 
-If set to 1, memory mapped libraries with the type REG will be shown.
+If set to 1, memory mapped libraries with the type REG will be
+shown, the same as B<-m>.
 
 =head2 PIDDLER_txt
 
-If set to 1, libraries with the TXT type will not be shown.
+If set to 1, libraries with the TXT type will be shown, the
+same as B<-t>.
 
 =head2 PIDDLER_pipe
 
-If set to 1, pipes will not be shown.
+If set to 1, pipes will be shown, the same as B<-p>.
 
 =head2 PIDDLER_unix
 
-If set to 1, unix socket will not be shown.
+If set to 1, unix sockets will be shown, the same as B<-u>.
 
 =head2 PIDDLER_vregroot
 
-If set to 1, VREG / will not be shown.
+If set to 1, VREG / will be shown, the same as B<-r>.
 
 =head2 PIDDLER_dont_dedup
 
-If set to 1, duplicate file handles are removed.
+If set to 1, duplicate file handles are not removed, the same
+as B<-d>.
 
 =head2 PIDDLER_dont_resolv
 
 If set to 1, PTR addresses will not be resolved for
-network connections.
+network connections, the same as B<-n>.
 
 =head1 FILE HANDLE DEDUPING
 
