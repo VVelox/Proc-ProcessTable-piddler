@@ -17,7 +17,8 @@ Display all process table, open files, and network connections for a PID.
 -p        Show pipes.
 -r        Show show VREG / files.
 -t        Show shared libraries.
--u        Show unix sockets.
+-u        Do not show unix sockets.
+-U        Do not resolve unix socket peers.
 ```
 
 # Enviromental Variables
@@ -38,7 +39,8 @@ Unless set to defined ands set to 1, these will default to 0.
 | PIDDLER_pipe | If set to 1, pipes will not be shown. |
 | PIDDLER_dont_pipe_chains | If set to 1, pipe chains will not be shown. |
 | PIDDLER_txt | If set to 1, libraries with the TXT type will not be shown. |
-| PIDDLER_unix | If set to 1, unix socket will not be shown. |
+| PIDDLER_dont_unix | If set to 1, unix sockets will not be shown. |
+| PIDDLER_dont_unix_peers | If set to 1, unix socket peers will not be resolved. |
 | PIDDLER_vregroot | If set to 1, VREG / will not be shown. |
 
 # Installing

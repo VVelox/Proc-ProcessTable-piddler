@@ -2,6 +2,8 @@ Revision history for Proc-ProcessTable-piddler
 
 0.3.0   2026-08-01/11:30
         - Add pipe chains, shown by default.
+        - Show what holds the far end of unix
+          sockets, FreeBSD only for now.
 
 0.2.0   2019-09-04/00:00
         - Add support for the environ key.
