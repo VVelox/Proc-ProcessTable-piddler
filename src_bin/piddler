@@ -28,7 +28,8 @@ sub help{
 -r        Show VREG / files.
 -t        Show shared libraries.
 -u        Do not show unix sockets.
--E        Do not resolve pipe, FIFO, and unix socket peers.
+-E        Do not resolve pipe, FIFO, unix socket, and SHM peers.
+-H        Do not humanize sizes.
 ';
 	}
 
@@ -47,6 +48,7 @@ my $dont_fifo=0;
 my $memreglib=0;
 my $dont_pipe_chains=0;
 my $dont_peers=0;
+my $dont_human_size=0;
 
 # get the commandline options
 Getopt::Long::Configure ('no_ignore_case');
@@ -60,6 +62,7 @@ GetOptions(
 		   'p' => \$dont_pipe,
 		   'u' => \$dont_unix,
 		   'E' => \$dont_peers,
+		   'H' => \$dont_human_size,
 		   'r' => \$vregroot,
 		   'd' => \$dont_dedup,
 		   'n' => \$dont_resolv,
@@ -135,6 +138,10 @@ if ( defined( $ENV{PIDDLER_dont_pipe_chains} ) ){
 if ( defined( $ENV{PIDDLER_dont_peers} ) ){
 	$dont_peers = $dont_peers ^ ( $ENV{PIDDLER_dont_peers} ? 1 : 0 );
 }
+# XOR the -H if needed
+if ( defined( $ENV{PIDDLER_dont_human_size} ) ){
+	$dont_human_size = $dont_human_size ^ ( $ENV{PIDDLER_dont_human_size} ? 1 : 0 );
+}
 # XOR the -n if needed
 if ( defined( $ENV{PIDDLER_dont_resolv} ) ){
 	$dont_resolv = $dont_resolv ^ ( $ENV{PIDDLER_dont_resolv} ? 1 : 0 );
@@ -169,6 +176,7 @@ my $ppp=Proc::ProcessTable::piddler->new(
 										  memreglib=>$memreglib,
 										  pipe_chains=>( $dont_pipe_chains ? 0 : 1 ),
 										  peers=>( $dont_peers ? 0 : 1 ),
+										  human_size=>( $dont_human_size ? 0 : 1 ),
 										  }
 										 );
 
@@ -181,7 +189,7 @@ piddler - Display all process table, open files, and network connections for a P
 
 =head1 SYNOPSIS
 
-piddler [B<-a>] [B<-c>] [B<-d>] [B<-f>] [B<-m>] [B<-n>] [B<--nc>] [B<-p>] [B<-r>] [B<-t>] [B<-u>] [B<-E>] <PID>[,<PID>...]
+piddler [B<-a>] [B<-c>] [B<-d>] [B<-f>] [B<-m>] [B<-n>] [B<--nc>] [B<-p>] [B<-r>] [B<-t>] [B<-u>] [B<-E>] [B<-H>] <PID>[,<PID>...]
 
 piddler [B<-h>|B<--help>]
 
@@ -235,7 +243,11 @@ Do not show unix sockets.
 
 =head2 -E
 
-Do not resolve pipe, FIFO, and unix socket peers.
+Do not resolve pipe, FIFO, unix socket, and SHM peers.
+
+=head2 -H
+
+Do not humanize sizes.
 
 =head1 ENVIRONMENTAL VARIABLES
 
@@ -280,8 +292,13 @@ If set to 1, unix sockets will not be shown, the same as B<-u>.
 
 =head2 PIDDLER_dont_peers
 
-If set to 1, pipe, FIFO, and unix socket peers will not be
-resolved, the same as B<-E>.
+If set to 1, pipe, FIFO, unix socket, and SHM peers will not
+be resolved, the same as B<-E>.
+
+=head2 PIDDLER_dont_human_size
+
+If set to 1, sizes will be printed as the raw number of
+bytes, the same as B<-H>.
 
 =head2 PIDDLER_vregroot
 
@@ -321,34 +338,39 @@ read/write instead, in which case the descriptor number is used, 0 being
 the input and 1 and 2 being the output. On those systems that means only
 pipes on stdin, stdout, and stderr may be chained together.
 
-=head1 PIPE, FIFO, AND UNIX SOCKET PEERS
+=head1 PIPE, FIFO, UNIX SOCKET, AND SHM PEERS
 
-The command holding the far end of a pipe, FIFO, or unix socket is
-appended to the one in question, so B<-p>, B<-f>, and B<-u> decide
-whether it is seen at all. B<-E> turns just this off.
+The command holding the far end of a pipe, FIFO, unix socket, or shared
+memory object is appended to the one in question, so B<-p>, B<-f>, and
+B<-u> decide whether it is seen at all for those. B<-E> turns just this
+off.
 
     7u  unix 0xfffff80022630400 0             ->0xfffff80022635000 (dbus-daemon --session(51092))
     14u unix 0xfffff80052dee800 0             /tmp/dbus-nWRW4XDDoD (xfce4-panel(63471))
-    3r  FIFO 0,230              0t0 299839014 /tmp/testfifo (cat(12593))
+    3r  FIFO 0xe6               0t0 299839014 /tmp/testfifo (cat(12593))
+    17u SHM                     288876   0    (firefox -contentproc...(7375, 24844, 32640, + 26 more))
 
 The far end is found either by way of the endpoint this one points at,
 by way of whatever points at this one, or by way of what else has the
 same one open. The second is what covers the unix sockets lsof names
 after the path they are bound to, such as the accepted end of a
-connection, and the third the FIFOs and, on Linux, pipes that both ends
-share a inode for.
+connection, and the third the FIFOs, shared memory objects, and pipes
+that both ends hold the same object for.
 
 Commands longer than 40 characters are truncated. A endpoint whose far
 end can not be looked up, such as one held by another user's process when
 not running as root, is shown as a ?. Nothing is shown for one that has
 no far end to speak of, such as a unix socket that is only bound and
-listening or a FIFO no one else has open. A endpoint may be held by more
-than one process, such as after a fork, in which case all of them are
-listed.
+listening or a FIFO no one else has open.
+
+A endpoint may be held by any number of other processes, such as a shared
+memory object inherited across a pile of forks, so the PIDs are gathered
+up under the command they are running and at most 8 commands and 8 PIDs
+per command are printed, with the rest noted as a count.
 
 Tying the two ends together requires a system wide lsof, which is only
-done when a pipe, FIFO, or unix socket is actually going to be printed,
-and only once no matter how many PIDs are given.
+done when a pipe, FIFO, unix socket, or shared memory object is actually
+going to be printed, and only once no matter how many PIDs are given.
 
 Unix sockets are only tied together on systems whose lsof points at the
 far end of one, such as FreeBSD.
@@ -364,6 +386,14 @@ The following are also RW filehandles.
    u
    uw
    ur
+
+Shared memory objects are rolled up as well. A process may hold a great
+many that print the same, anonymous ones having nothing to tell them
+apart but their size and what else holds them, so only the first of them
+is printed, with the number left off tacked onto the FD. B<-d> turns this
+off along with the rest of the deduping.
+
+    40u+43 SHM  262.144k
 
 =cut
 

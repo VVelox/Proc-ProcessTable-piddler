@@ -86,6 +86,13 @@ The modes below are all also RW and considered that.
     ur
     uw
 
+Shared memory objects are rolled up as well. A process may hold a great
+many that print the same, anonymous ones having nothing to tell them
+apart but their size and what else holds them, so only the first of them
+is printed, with the number left off tacked onto the FD.
+
+    40u+43 SHM  262.144k
+
 Defaults to 0, false.
 
 =head4 dont_resolv
@@ -97,6 +104,19 @@ Defaults to 0, false.
 =head4 fifo
 
 Print FIFOs.
+
+Defaults to 1, true.
+
+=head4 human_size
+
+Print the size of a open file as a readable value rather than the raw
+number of bytes, in the same manner as the process VSZ and RSS.
+
+    SIZE/OFF
+    823.640k
+
+Only the SIZE/OFF values that are a size are touched, a offset being a
+position rather than a amount.
 
 Defaults to 1, true.
 
@@ -116,33 +136,36 @@ Defaults to 0, false.
 
 =head4 peers
 
-For each pipe, FIFO, and unix socket printed, show the command holding
-the far end of it.
+For each pipe, FIFO, unix socket, and shared memory object printed, show
+the command holding the far end of it.
 
     FD  TYPE DEVICE             SIZE/OFF NODE      NAME
     7u  unix 0xfffff80022630400 0                  ->0xfffff80022635000 (dbus-daemon --session(51092))
     14u unix 0xfffff80052dee800 0                  /tmp/dbus-nWRW4XDDoD (xfce4-panel(63471))
-    3r  FIFO 0,230              0t0      299839014 /tmp/testfifo (cat(12593))
+    3r  FIFO 0xe6               0t0      299839014 /tmp/testfifo (cat(12593))
+    17u SHM                     288876   0         (firefox -contentproc...(7375, 24844, 32640, + 26 more))
 
 The far end is found either by way of the endpoint this one points at,
 by way of whatever points at this one, or by way of what else has the
 same one open. The second is what covers the unix sockets lsof names
 after the path they are bound to, such as the accepted end of a
-connection, and the third the FIFOs and, on Linux, pipes that both ends
-share a inode for.
+connection, and the third the FIFOs, shared memory objects, and pipes
+that both ends hold the same object for.
 
 Commands longer than 40 characters are truncated. A endpoint whose far
 end can not be looked up, such as one held by another user's process when
 not running as root, is shown as a ?. Nothing is shown for one that has
 no far end to speak of, such as a unix socket that is only bound and
-listening or a FIFO no one else has open. A endpoint may be held by more
-than one process, such as after a fork, in which case all of them are
-listed.
+listening or a FIFO no one else has open.
+
+A endpoint may be held by any number of other processes, such as a shared
+memory object inherited across a pile of forks, so the PIDs are gathered
+up under the command they are running and at most 8 commands and 8 PIDs
+per command are printed, with the rest noted as a count.
 
 Tying the two ends together requires a system wide lsof, so it is only
-run when a pipe, FIFO, or unix socket is actually going to be printed,
-meaning turning L</pipe>, L</fifo>, and L</unix> all off turns this off
-as well, and only once per call to run.
+run when a pipe, FIFO, unix socket, or shared memory object is actually
+going to be printed, and only once per call to run.
 
 Unix sockets are only tied together on systems whose lsof points at the
 far end of one, such as FreeBSD.
@@ -232,6 +255,12 @@ sub new{
 							'BRIGHT_RED',
 							'BRIGHT_BLUE'
 							],
+				sizeColors=>[
+							 'GREEN',
+							 'YELLOW',
+							 'RED',
+							 'BRIGHT_BLUE'
+							 ],
 				file_colors=>[
 							  'BRIGHT_YELLOW',
 							  'BRIGHT_CYAN',
@@ -267,7 +296,9 @@ sub new{
 				memreglib=>0,
 				pipe_chains=>1,
 				peers=>1,
+				human_size=>1,
 				peer_command_length=>40,
+				peer_max=>8,
 				pipe_chain_max=>16,
 				pipe_chain_max_depth=>32,
 				};
@@ -275,7 +306,8 @@ sub new{
 
 	my @arg_feed=(
 				  'txt', 'pipe', 'unix', 'vregroot', 'dont_dedup', 'dont_resolv',
-				  'fifo', 'a_inode', 'memreglib', 'pipe_chains', 'peers'
+				  'fifo', 'a_inode', 'memreglib', 'pipe_chains', 'peers',
+				  'human_size'
 				   );
 
 	foreach my $feed ( @arg_feed ){
@@ -344,6 +376,12 @@ sub run{
 	}
 	if( defined( $proc_keys_hash{groups} ) ){
 		delete( $proc_keys_hash{groups} );
+	}
+	if ( defined( $proc_keys_hash{euid} ) ){
+		delete( $proc_keys_hash{euid} );
+	}
+	if ( defined( $proc_keys_hash{egid} ) ){
+		delete( $proc_keys_hash{egid} );
 	}
 	if ( defined( $proc_keys_hash{cmdline} ) ){
 		delete( $proc_keys_hash{cmdline} );
@@ -418,40 +456,38 @@ sub run{
 		#
 		# UID
 		#
-		my $user=getpwuid($proc->{uid});
-		if ( ! defined( $user ) ) {
-			$user=color( $self->{idColors}[0] ).$proc->{uid}.color('reset');
-		}else{
-			$user=color( $self->{idColors}[0] ).$user.
-			color( $self->{idColors}[1] ).'('.
-			color( $self->{idColors}[2] ).$proc->{uid}.
-			color( $self->{idColors}[1] ).')'
-			.color('reset');
-		}
-
 		push( @data, [
 					  color( $self->{varColor} ).'UID'.color('reset'),
-					  $user.' '.color('reset')
+					  $self->_userString( $proc->{uid} ).' '.color('reset')
 					  ]);
+
+		#
+		# EUID
+		#
+		if ( defined( $proc->{euid} ) ){
+			push( @data, [
+						  color( $self->{varColor} ).'EUID'.color('reset'),
+						  $self->_userString( $proc->{euid} ).' '.color('reset')
+						  ]);
+		}
 
 		#
 		# GID
 		#
-		my $group=getgrgid($proc->{gid});
-		if ( ! defined( $group ) ) {
-			$group=color( $self->{idColors}[0] ).$proc->{gid}.color('reset');
-		}else{
-			$group=color( $self->{idColors}[0] ).$group.
-			color( $self->{idColors}[1] ).'('.
-			color( $self->{idColors}[2] ).$proc->{gid}.
-			color( $self->{idColors}[1] ).')'
-			.color('reset');
-		}
-
 		push( @data, [
 					  color( $self->{varColor} ).'GID'.color('reset'),
-					  $group.' '.color('reset')
+					  $self->_groupString( $proc->{gid} ).' '.color('reset')
 					  ]);
+
+		#
+		# EGID
+		#
+		if ( defined( $proc->{egid} ) ){
+			push( @data, [
+						  color( $self->{varColor} ).'EGID'.color('reset'),
+						  $self->_groupString( $proc->{egid} ).' '.color('reset')
+						  ]);
+		}
 
 		#
 		# Groups
@@ -459,17 +495,7 @@ sub run{
 		if ( defined( $proc->{groups} ) ){
 			my @groups;
 			foreach my $current_group ( @{ $proc->{groups} } ){
-				$group=getgrgid( $current_group );
-				if ( ! defined( $group ) ) {
-					$group=color( $self->{idColors}[0] ).$current_group.color('reset');
-				}else{
-					$group=color( $self->{idColors}[0] ).$group.
-					color( $self->{idColors}[1] ).'('.
-					color( $self->{idColors}[2] ).$current_group.
-					color( $self->{idColors}[1] ).')'
-					.color('reset');
-				}
-				push( @groups, $group );
+				push( @groups, $self->_groupString( $current_group ) );
 			}
 
 			push( @data, [
@@ -493,7 +519,7 @@ sub run{
 		if ( !defined( $proc->{pctmem} ) ) {
 			my $total_mem=totalmem;
 			if ( $total_mem > 0 ){
-				$mem=($proc->{rss} / $total_mem)*100;
+				$mem=($self->_procMem( $proc->{rss} ) / $total_mem)*100;
 			}else{
 				$mem=0;
 			}
@@ -511,7 +537,7 @@ sub run{
 		#
 		push( @data, [
 					  color( $self->{varColor} ).'VSZ'.color('reset'),
-					  $self->memString( $proc->size, 'vsz' )
+					  $self->memString( $self->_procMem( $proc->size ), 'vsz' )
 					  ]);
 
 		#
@@ -519,8 +545,27 @@ sub run{
 		#
 		push( @data, [
 					  color( $self->{varColor} ).'RSS'.color('reset'),
-					  $self->memString( $proc->rss, 'rss' )
+					  $self->memString( $self->_procMem( $proc->rss ), 'rss' )
 					  ]);
+
+		#
+		# the open files are gathered in here as the total shared memory
+		# is worked out from them, which belongs with the rest of the
+		# memory bits rather than down with the table of them
+		#
+		my $pid=$proc->pid;
+		my $files=$self->_lsof( '-p '.$pid );
+
+		#
+		# total SHM
+		#
+		my $shm_total=$self->_shmTotal( $files );
+		if ( $shm_total > 0 ){
+			push( @data, [
+						  color( $self->{varColor} ).'Total SHM'.color('reset'),
+						  $self->memString( $shm_total, 'size' )
+						  ]);
+		}
 
 		#
 		# time
@@ -618,8 +663,6 @@ sub run{
 		#
 		my $open_files='';
 		my $has_pipes=0;
-		my $pid=$proc->pid;
-		my $files=$self->_lsof( '-p '.$pid );
 		if ( defined( $files ) ){
 
 			my $ftb = Text::ANSITable->new;
@@ -647,6 +690,7 @@ sub run{
 			my %r_filehandles;
 			my %w_filehandles;
 			my %mem_filehandles;
+			my %shm_alike;
 
 			foreach my $file ( @{ $files } ){
 				my $fd=$file->{fd};
@@ -720,22 +764,33 @@ sub run{
 				# begin deduping
 				my $name= color( $self->{file_colors}[5] ).$file_name.color( 'reset' );
 
-				# tie the far end of a pipe, FIFO, or unix socket to whatever
-				# is holding it, which is only worth the system wide lsof it
-				# takes for one that is going to be printed
+				# tie the far end of a pipe, FIFO, unix socket, or shared
+				# memory object to whatever is holding it, which is only
+				# worth the system wide lsof it takes for one that is going
+				# to be printed
 				if (
 					( ! $dont_add ) &&
 					( $self->{peers} ) &&
 					(
 					 ( $self->_isUnix( $type ) ) ||
-					 ( $self->_isPipe( $type ) )
+					 ( $self->_isPipe( $type ) ) ||
+					 ( $self->_isShm( $type ) )
 					 )
 					){
 					my $peer=$self->_peerCommands( $file, \%commands );
 					if ( defined( $peer ) ){
-						$name=$name.' '.color( $self->{valColor} ).'('.$peer.')'.color( 'reset' );
+						# a shared memory object has no name to speak of, so
+						# there is nothing for this to trail after
+						my $spacer=' ';
+						if ( $file_name =~ /^$/ ){
+							$spacer='';
+						}
+						$name=$name.$spacer.color( $self->{valColor} ).'('.$peer.')'.color( 'reset' );
 					}
 				}
+
+				my $size_string=$self->_sizeString( $file );
+
 				if (
 					( ! $self->{dont_dedup} ) &&
 					( ! $dont_add )
@@ -775,6 +830,17 @@ sub run{
 								$mem_filehandles{ $name }++;
 							}
 						}
+					}elsif ( $self->_isShm( $type ) ){
+						# a process may hold a pile of shared memory objects
+						# that all print the same, anonymous ones having
+						# nothing to tell them apart but their size and what
+						# else holds them, which are worth a single line and
+						# a count of the rest
+						if (! defined( $shm_alike{ $size_string."\0".$name } ) ) {
+							$shm_alike{ $size_string."\0".$name } = 1;
+						} else {
+							$shm_alike{ $size_string."\0".$name }++;
+						}
 					}
 				}
 
@@ -783,7 +849,7 @@ sub run{
 								   color( $self->{file_colors}[0] ).$fd.color( 'reset' ),
 								   color( $self->{file_colors}[1] ).$type.color( 'reset' ),
 								   color( $self->{file_colors}[2] ).$device.color( 'reset' ),
-								   color( $self->{file_colors}[3] ).$size_off.color( 'reset' ),
+								   $size_string,
 								   color( $self->{file_colors}[4] ).$node.color( 'reset' ),
 								   $name,
 								   ]);
@@ -797,6 +863,7 @@ sub run{
 				my %r_dedup;
 				my %w_dedup;
 				my %mem_dedup;
+				my %shm_dedup;
 				foreach my $line ( @fdata ){
 					if (
 						( $line->[1] =~ /[Vv][Rr][Ee][Gg]/ ) ||
@@ -856,6 +923,18 @@ sub run{
 												 $line->[4],
 												 $line->[5],
 												 ]);
+						}
+					}elsif ( $line->[1] =~ /[Ss][Hh][Mm]/ ){
+						# the ones that print the same are rolled up into the
+						# first of them, with the number left off tacked onto
+						# the FD in the same manner as a duplicate handle
+						my $key=$line->[3]."\0".$line->[5];
+						if ( !defined( $shm_dedup{$key} ) ){
+							$shm_dedup{$key}=1;
+							if ( $shm_alike{$key} > 1 ){
+								$line->[0]=$line->[0].'+'.( $shm_alike{$key} - 1 );
+							}
+							push( @final_fdata, \@{ $line } );
 						}
 					}else{
 						push( @final_fdata, \@{ $line } );
@@ -931,8 +1010,8 @@ sub run{
 #
 # Runs lsof with the additional arguments passed to it and returns a
 # array ref of hash refs, one per open file, with the keys pid, fd,
-# type, device, size_off, node, name, and match_name. Undef is returned
-# should lsof fail.
+# type, device, size_off, node, node_id, share_count, name, and
+# match_name. Undef is returned should lsof fail.
 #
 sub _lsof{
 	my $self=$_[0];
@@ -942,10 +1021,14 @@ sub _lsof{
 		$args='';
 	}
 
-	# lsof has a habit of warning about things of no interest here, such
-	# as rebuilding its device cache or a directory it could not read, so
-	# stderr is sent off to be forgotten about
-	my $output_raw=`lsof -n -l -P $args 2> /dev/null`;
+	# The field output is used rather than the columns as the latter may
+	# only be picked apart via the widths worked out from the header, run
+	# together when a value overflows, and have no place for the node
+	# identifier and share count. lsof also has a habit of warning about
+	# things of no interest here, such as rebuilding its device cache or
+	# a directory it could not read, so stderr is sent off to be
+	# forgotten about.
+	my $output_raw=`lsof -n -l -P -F0 $args 2> /dev/null`;
 	if (
 		( $? != 0 ) &&
 		!(
@@ -956,113 +1039,112 @@ sub _lsof{
 		return undef;
 	}
 
-	my @lines=split(/\n/, $output_raw);
-
-	# lsof pads its columns out to fit the widest value in this run, so
-	# where each one starts and stops may only be worked out from the
-	# header of this batch of output. Offsets are used instead of
-	# splitting on whitespace as the width of the COMMAND column varies
-	# with the command name, DEVICE may overflow into the padding to the
-	# left of it, and NAME may contain whitespace.
-	my $header_int=0;
-	while (
-		   ( defined( $lines[$header_int] ) ) &&
-		   ( $lines[$header_int] !~ /^COMMAND[\ \t]/ )
-		   ){
-		$header_int++;
-	}
-	my @header_columns;
-	if ( defined( $lines[$header_int] ) ){
-		while ( $lines[$header_int] =~ /(\S+)/g ){
-			push( @header_columns, { start=>$-[1], end=>$+[1] } );
-		}
-	}
-
-	# The columns of interest, counted back from NAME as it is always the
-	# last one. FD is not given a offset of its own as the access and
-	# lock characters are printed past the end of that column, placing it
-	# in the same region as TYPE.
-	my $last_column=$#header_columns;
-	if ( $last_column < 7 ){
-		return [];
-	}
-	my $pid_end=$header_columns[ $last_column - 7 ]{end};
-	my $user_end=$header_columns[ $last_column - 6 ]{end};
-	my $type_end=$header_columns[ $last_column - 4 ]{end};
-	my $device_end=$header_columns[ $last_column - 3 ]{end};
-	my $size_end=$header_columns[ $last_column - 2 ]{end};
-	my $node_end=$header_columns[ $last_column - 1 ]{end};
-	my $name_start=$header_columns[ $last_column ]{start};
-
 	my @files;
-	my $line_int=$header_int + 1;
-	while ( defined( $lines[$line_int] ) ){
-		my $line=$lines[$line_int];
-		$line_int++;
+	my $pid='';
+	my $file;
 
-		my ( $fd, $type )=split( /[\ \t]+/, $self->_column( $line, $user_end, $type_end ) );
-		if ( !defined( $fd ) ){
-			$fd='';
-		}
-		if ( !defined( $type ) ){
-			$type='';
-		}
+	# Every field is NUL terminated and the first one of each set has a
+	# newline stuck onto the front of it. A set beginning with p is a
+	# process and one beginning with f a file belonging to the last
+	# process seen.
+	foreach my $field ( split( /\0/, $output_raw ) ){
+		$field=~s/^\n//;
 
-		my $file_name=$self->_column( $line, $name_start );
-
-		# lsof appends the file system, device, or the like to the name
-		# for some types, which is not wanted when matching on the name
-		my $match_name=$file_name;
-		$match_name=~s/[\ \t]+\([^\)]*\)$//;
-
-		# the PID is the trailing part of the region it shares with
-		# COMMAND, which is used as the command name may contain spaces
-		my $file_pid='';
-		if ( $self->_column( $line, 0, $pid_end ) =~ /([0-9]+)$/ ){
-			$file_pid=$1;
+		# the newline the last set of all ends with is left sitting on its
+		# own once taken off, with nothing to it beyond that
+		if ( $field =~ /^$/ ){
+			next;
 		}
 
-		push( @files, {
-					   pid=>$file_pid,
-					   fd=>$fd,
-					   type=>$type,
-					   device=>$self->_column( $line, $type_end, $device_end ),
-					   size_off=>$self->_column( $line, $device_end, $size_end ),
-					   node=>$self->_column( $line, $size_end, $node_end ),
-					   name=>$file_name,
-					   match_name=>$match_name,
-					   } );
+		my $id=substr( $field, 0, 1 );
+		my $value=substr( $field, 1 );
+
+		if ( $id eq 'p' ){
+			$pid=$value;
+		}elsif ( $id eq 'f' ){
+			if ( defined( $file ) ){
+				push( @files, $self->_lsofFile( $file ) );
+			}
+			$file={
+				   pid=>$pid,
+				   fd=>$value,
+				   type=>'',
+				   device=>'',
+				   size=>'',
+				   offset=>'',
+				   node=>'',
+				   node_id=>'',
+				   share_count=>'',
+				   name=>'',
+				   };
+		}elsif ( defined( $file ) ){
+			# the access and lock characters are printed as a part of the
+			# FD column, which is what the rest of this expects them in
+			if (
+				( $id eq 'a' ) ||
+				( $id eq 'l' )
+				){
+				if (
+					( $value !~ /^[\ \t]*$/ ) &&
+					( $value ne '-' )
+					){
+					$file->{fd}=$file->{fd}.$value;
+				}
+			}elsif ( $id eq 't' ){
+				$file->{type}=$value;
+			}elsif ( $id eq 'd' ){
+				$file->{device}=$value;
+			}elsif ( $id eq 'D' ){
+				# the device character code is the better of the two and
+				# only some types have one
+				if ( $file->{device} =~ /^$/ ){
+					$file->{device}=$value;
+				}
+			}elsif ( $id eq 's' ){
+				$file->{size}=$value;
+			}elsif ( $id eq 'o' ){
+				$file->{offset}=$value;
+			}elsif ( $id eq 'i' ){
+				$file->{node}=$value;
+			}elsif ( $id eq 'N' ){
+				$file->{node_id}=$value;
+			}elsif ( $id eq 'C' ){
+				$file->{share_count}=$value;
+			}elsif ( $id eq 'n' ){
+				$file->{name}=$value;
+			}
+		}
+	}
+
+	if ( defined( $file ) ){
+		push( @files, $self->_lsofFile( $file ) );
 	}
 
 	return \@files;
 }
 
 #
-# Pulls a column out of a line of lsof output using the offsets worked
-# out from the header and trims the padding off of it. If no end offset
-# is given, everything from the start offset on is returned, which is
-# what is wanted for NAME as it is the last column and may contain
-# whitespace.
+# Finishes off a file gathered by _lsof, filling in the values that are
+# worked out from the fields rather than taken from one of them.
 #
-sub _column{
+sub _lsofFile{
 	my $self=$_[0];
-	my $line=$_[1];
-	my $start=$_[2];
-	my $end=$_[3];
+	my $file=$_[1];
 
-	my $value='';
-	if ( length( $line ) > $start ){
-		if ( defined( $end ) ){
-			$value=substr( $line, $start, $end - $start );
-		}else{
-			$value=substr( $line, $start );
-		}
+	# lsof prints the size when it has one and falls back to the offset,
+	# which is what the SIZE/OFF column amounts to
+	$file->{size_off}=$file->{size};
+	if ( $file->{size_off} =~ /^$/ ){
+		$file->{size_off}=$file->{offset};
 	}
 
-	$value=~s/^[\ \t]+//;
-	$value=~s/[\ \t]+$//;
+	# lsof appends the file system, device, or the like to the name for
+	# some types, which is not wanted when matching on the name
+	my $match_name=$file->{name};
+	$match_name=~s/[\ \t]+\([^\)]*\)$//;
+	$file->{match_name}=$match_name;
 
-	return $value;
+	return $file;
 }
 
 #
@@ -1196,11 +1278,150 @@ sub _isUnix{
 }
 
 #
-# Works out the IDs used to tie the two ends of a pipe, FIFO, or unix
-# socket entry from _lsof together, returning a hash ref with the keys id
-# and peer_id. The peer_id is undef when the entry names no far end of
-# its own, such as a unix socket lsof names after the path it is bound
-# to, and undef is returned for anything that has no ID at all.
+# Renders the SIZE/OFF column for a file from _lsof. Only a size is worth
+# making readable, a offset being a position rather than a amount, and
+# lsof marks those out by printing them as 0t<decimal> or 0x<hex>.
+#
+sub _sizeString{
+	my $self=$_[0];
+	my $file=$_[1];
+
+	if (
+		( $self->{human_size} ) &&
+		( $file->{size} =~ /^[0-9]+$/ )
+		){
+		return $self->memString( $file->{size}, 'size' );
+	}
+
+	return color( $self->{file_colors}[3] ).$file->{size_off}.color( 'reset' );
+}
+
+#
+# Renders a UID as the user it belongs to with the number after it,
+# falling back to just the number for any that can't be looked up.
+#
+sub _userString{
+	my $self=$_[0];
+	my $uid=$_[1];
+
+	my $user=getpwuid( $uid );
+	if ( !defined( $user ) ){
+		return color( $self->{idColors}[0] ).$uid.color('reset');
+	}
+
+	return color( $self->{idColors}[0] ).$user.
+	color( $self->{idColors}[1] ).'('.
+	color( $self->{idColors}[2] ).$uid.
+	color( $self->{idColors}[1] ).')'
+	.color('reset');
+}
+
+#
+# The same as _userString, for a GID and the group it belongs to.
+#
+sub _groupString{
+	my $self=$_[0];
+	my $gid=$_[1];
+
+	my $group=getgrgid( $gid );
+	if ( !defined( $group ) ){
+		return color( $self->{idColors}[0] ).$gid.color('reset');
+	}
+
+	return color( $self->{idColors}[0] ).$group.
+	color( $self->{idColors}[1] ).'('.
+	color( $self->{idColors}[2] ).$gid.
+	color( $self->{idColors}[1] ).')'
+	.color('reset');
+}
+
+#
+# Proc::ProcessTable works the memory sizes out in a 32 bit integer on
+# some systems, FreeBSD included, so anything past 2G comes back having
+# wrapped around into the negative. Adding the 4G it lost back on puts
+# that right for any process that has not gone past 4G, which is as far
+# as what is reported may be taken.
+#
+sub _procMem{
+	my $self=$_[0];
+	my $mem=$_[1];
+
+	if ( !defined( $mem ) ){
+		return 0;
+	}
+
+	if ( $mem < 0 ){
+		$mem=$mem + 2**32;
+	}
+
+	# past 4G there is nothing left to work with
+	if ( $mem < 0 ){
+		return 0;
+	}
+
+	return $mem;
+}
+
+#
+# Adds up the size of the shared memory objects in a list of files from
+# _lsof. One held on more than one FD is only counted the once, the
+# object being what takes up the memory rather than the handle on it.
+#
+sub _shmTotal{
+	my $self=$_[0];
+	my $files=$_[1];
+
+	if ( !defined( $files ) ){
+		return 0;
+	}
+
+	my $total=0;
+	my %seen;
+	foreach my $file ( @{ $files } ){
+		if (
+			( ! $self->_isShm( $file->{type} ) ) ||
+			( $file->{size} !~ /^[0-9]+$/ )
+			){
+			next;
+		}
+
+		# lsof gives most things a node identifier, which is the only way
+		# of telling one anonymous object from another
+		if ( $file->{node_id} !~ /^$/ ){
+			if ( defined( $seen{ $file->{node_id} } ) ){
+				next;
+			}
+			$seen{ $file->{node_id} }=1;
+		}
+
+		$total=$total + $file->{size};
+	}
+
+	return $total;
+}
+
+#
+# Returns true if the lsof type passed to it is a shared memory object.
+#
+sub _isShm{
+	my $self=$_[0];
+	my $type=$_[1];
+
+	if ( $type =~ /^[Ss][Hh][Mm]$/ ){
+		return 1;
+	}
+
+	return 0;
+}
+
+#
+# Works out the IDs used to tie the two ends of a pipe, FIFO, unix
+# socket, or shared memory entry from _lsof together, returning a hash
+# ref with the keys id and peer_id. The peer_id is undef when the entry
+# neither names a far end of its own nor is the sort shared by way of
+# both ends holding it, such as a unix socket lsof names after the path
+# it is bound to, and undef is returned for anything that has no ID at
+# all.
 #
 sub _peerIDs{
 	my $self=$_[0];
@@ -1211,39 +1432,46 @@ sub _peerIDs{
 		$class='unix';
 	}elsif ( $self->_isPipe( $file->{type} ) ){
 		$class='pipe';
+	}elsif ( $self->_isShm( $file->{type} ) ){
+		$class='shm';
 	}else{
 		return undef;
 	}
 
-	# Systems such as FreeBSD point at the address of the far end via the
-	# name. Linux does so for neither, but does give both ends of a pipe
-	# or FIFO the same inode via the node, which unix sockets do not
-	# share, working those out there meaning lsof +E or ss -x.
-	if (
-		( $file->{match_name} =~ /^\-\>(\S+)/ ) &&
-		( $file->{device} !~ /^$/ )
-		){
-		return {
-				id=>$class.':'.$file->{device},
-				peer_id=>$class.':'.$1,
-				};
+	# The node identifier names the object itself, which is what both ends
+	# of one have in common, with the device and inode falling in for it
+	# on anything lsof reports no identifier for.
+	my $id;
+	if ( $file->{node_id} !~ /^$/ ){
+		$id=$class.':'.$file->{node_id};
 	}elsif (
-			( $class eq 'pipe' ) &&
+			( $file->{device} !~ /^$/ ) &&
 			( $file->{node} =~ /^[0-9]+$/ )
 			){
-		my $id=$class.':'.$file->{device}.':'.$file->{node};
-		return {
-				id=>$id,
-				peer_id=>$id,
-				};
+		$id=$class.':'.$file->{device}.':'.$file->{node};
 	}elsif ( $file->{device} !~ /^$/ ){
-		return {
-				id=>$class.':'.$file->{device},
-				peer_id=>undef,
-				};
+		$id=$class.':'.$file->{device};
+	}else{
+		return undef;
 	}
 
-	return undef;
+	# Systems such as FreeBSD point at the far end of a pipe or connected
+	# unix socket via the name, where the address named is the ID of the
+	# object on the other side of it.
+	my $peer_id;
+	if ( $file->{match_name} =~ /^\-\>(\S+)/ ){
+		$peer_id=$class.':'.$1;
+	}elsif ( $class ne 'unix' ){
+		# a pipe, FIFO, or shared memory object is instead shared by way
+		# of both ends holding the same one, which unix sockets do not do,
+		# tying those together on Linux meaning lsof +E or ss -x
+		$peer_id=$id;
+	}
+
+	return {
+			id=>$id,
+			peer_id=>$peer_id,
+			};
 }
 
 #
@@ -1351,25 +1579,71 @@ sub _peerCommands{
 	}
 
 	if ( !defined( $peer_pids[0] ) ){
-		# a endpoint lsof points somewhere with is known to have a far end,
-		# so say that it could not be reached, while one that shares a ID
-		# with the far end or is named after a path may just be a FIFO or
-		# socket nothing else has open, where there is nothing to say
+		# A endpoint lsof points somewhere with is known to have a far end,
+		# as is one held more than once, so say that it could not be
+		# reached. Anything else may just be a FIFO or socket nothing else
+		# has open, where there is nothing to say.
 		if (
-			( defined( $ids->{peer_id} ) ) &&
-			( $ids->{peer_id} ne $ids->{id} )
+			(
+			 ( defined( $ids->{peer_id} ) ) &&
+			 ( $ids->{peer_id} ne $ids->{id} )
+			 ) ||
+			(
+			 ( $file->{share_count} =~ /^[0-9]+$/ ) &&
+			 ( $file->{share_count} > 1 )
+			 )
 			){
 			return '?';
 		}
 		return undef;
 	}
 
-	my @rendered;
-	foreach my $peer_pid ( @peer_pids ){
-		push( @rendered, $self->_peerCommand( $peer_pid, $commands ) );
+	# Something like a shared memory object may be held by a great many
+	# processes, which for the most part are copies of each other, so the
+	# PIDs are gathered up under the command they are running rather than
+	# printing that over and over. Both how many commands are printed and
+	# how many PIDs are printed for any one of them are capped, as even
+	# grouped up it may be more than is worth reading through.
+	my %groups;
+	my @order;
+	foreach my $peer_pid ( sort { $a <=> $b } @peer_pids ){
+		my $command=$self->_peerCommandName( $peer_pid, $commands );
+		if ( !defined( $groups{$command} ) ){
+			$groups{$command}=[];
+			push( @order, $command );
+		}
+		push( @{ $groups{$command} }, $peer_pid );
 	}
 
-	return join( ', ', @rendered );
+	my $more_commands=0;
+	if ( $#order >= $self->{peer_max} ){
+		$more_commands=$#order + 1 - $self->{peer_max};
+		@order=@order[ 0 .. $self->{peer_max} - 1 ];
+	}
+
+	my @rendered;
+	foreach my $command ( @order ){
+		my @group_pids=@{ $groups{$command} };
+
+		my $more_pids=0;
+		if ( $#group_pids >= $self->{peer_max} ){
+			$more_pids=$#group_pids + 1 - $self->{peer_max};
+			@group_pids=@group_pids[ 0 .. $self->{peer_max} - 1 ];
+		}
+
+		my $rendered=$command.'('.join( ', ', @group_pids );
+		if ( $more_pids > 0 ){
+			$rendered=$rendered.', + '.$more_pids.' more';
+		}
+		push( @rendered, $rendered.')' );
+	}
+
+	my $toReturn=join( ', ', @rendered );
+	if ( $more_commands > 0 ){
+		$toReturn=$toReturn.', + '.$more_commands.' more';
+	}
+
+	return $toReturn;
 }
 
 #
@@ -1473,11 +1747,11 @@ sub _pipeChains{
 }
 
 #
-# Renders the command used for a PID on the far end of a pipe or socket,
+# Renders the command used for a PID on the far end of a endpoint,
 # truncating it as needed. A ? is used for any process that can't be
 # looked up.
 #
-sub _peerCommand{
+sub _peerCommandName{
 	my $self=$_[0];
 	my $pid=$_[1];
 	my $commands=$_[2];
@@ -1491,7 +1765,19 @@ sub _peerCommand{
 		$command=substr( $command, 0, $self->{peer_command_length} ).'...';
 	}
 
-	return $command.'('.$pid.')';
+	return $command;
+}
+
+#
+# The same as _peerCommandName, with the PID it belongs to tacked onto
+# the end of it.
+#
+sub _peerCommand{
+	my $self=$_[0];
+	my $pid=$_[1];
+	my $commands=$_[2];
+
+	return $self->_peerCommandName( $pid, $commands ).'('.$pid.')';
 }
 
 #

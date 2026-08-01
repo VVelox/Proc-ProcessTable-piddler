@@ -3,7 +3,14 @@ Revision history for Proc-ProcessTable-piddler
 0.3.0   2026-08-01/11:30
         - Add pipe chains, shown by default.
         - Show what holds the far end of pipes,
-          FIFOs, and unix sockets.
+          FIFOs, unix sockets, and SHM.
+        - Humanize open file sizes.
+        - Roll up alike SHM when deduping.
+        - Show total SHM with the process info.
+        - Unwrap 32 bit wrapped RSS and VSZ.
+        - Show EUID and EGID when reported.
+        - Parse lsof field output, so DEVICE is
+          now its raw device number.
         - Don't print lsof warnings.
 
 0.2.0   2019-09-04/00:00

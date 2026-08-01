@@ -18,7 +18,8 @@ Display all process table, open files, and network connections for a PID.
 -r        Show show VREG / files.
 -t        Show shared libraries.
 -u        Do not show unix sockets.
--E        Do not resolve pipe, FIFO, and unix socket peers.
+-E        Do not resolve pipe, FIFO, unix socket, and SHM peers.
+-H        Do not humanize sizes.
 ```
 
 # Enviromental Variables
@@ -40,7 +41,8 @@ Unless set to defined ands set to 1, these will default to 0.
 | PIDDLER_dont_pipe_chains | If set to 1, pipe chains will not be shown. |
 | PIDDLER_txt | If set to 1, libraries with the TXT type will not be shown. |
 | PIDDLER_dont_unix | If set to 1, unix sockets will not be shown. |
-| PIDDLER_dont_peers | If set to 1, pipe, FIFO, and unix socket peers will not be resolved. |
+| PIDDLER_dont_peers | If set to 1, pipe, FIFO, unix socket, and SHM peers will not be resolved. |
+| PIDDLER_dont_human_size | If set to 1, sizes will be printed as the raw number of bytes. |
 | PIDDLER_vregroot | If set to 1, VREG / will not be shown. |
 
 # Installing
