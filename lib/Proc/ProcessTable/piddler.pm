@@ -16,11 +16,11 @@ Proc::ProcessTable::piddler - Display all process table, open files, and network
 
 =head1 VERSION
 
-Version 0.2.0
+Version 0.3.0
 
 =cut
 
-our $VERSION = '0.2.0';
+our $VERSION = '0.3.0';
 
 
 =head1 SYNOPSIS
@@ -118,6 +118,31 @@ Print pipes.
 
 Defaults to 0, false.
 
+=head4 pipe_chains
+
+Print the pipelines the process is a part of, showing the commands in
+the order the data flows through them, oldest to newest.
+
+    PIPE CHAINS
+    ps auxw(4821) | grep foo(4822) | wc -l(4823)
+
+Commands longer than 40 characters are truncated. Any process that can
+not be looked up, such as one belonging to another user when not running
+as root, is shown as a ?. A process may sit on more than one pipe, so at
+most 16 chains are shown for any one of them.
+
+Tying the two ends of a pipe together requires a system wide lsof, so it
+is only run for processes that actually have a pipe open, and only once
+per call to run.
+
+The direction of a pipe is taken from the r and w access characters when
+lsof reports them. Systems such as FreeBSD report pipes as being open
+read/write instead, in which case the descriptor number is used, 0 being
+the input and 1 and 2 being the output. On those systems that means only
+pipes on stdin, stdout, and stderr may be chained together.
+
+Defaults to 1, true.
+
 =head4 txt
 
 Print the linked libraries used by the binary.
@@ -203,12 +228,16 @@ sub new{
 				fifo=>0,
 				a_inode=>0,
 				memreglib=>0,
+				pipe_chains=>1,
+				pipe_command_length=>40,
+				pipe_chain_max=>16,
+				pipe_chain_max_depth=>32,
 				};
     bless $self;
 
 	my @arg_feed=(
 				  'txt', 'pipe', 'unix', 'vregroot', 'dont_dedup', 'dont_resolv',
-				  'fifo', 'a_inode', 'memreglib'
+				  'fifo', 'a_inode', 'memreglib', 'pipe_chains'
 				   );
 
 	foreach my $feed ( @arg_feed ){
@@ -292,6 +321,34 @@ sub run{
 
 	if (!defined( $procs[0] )){
 		return ''
+	}
+
+	# the endpoints are only good for as long as the processes holding
+	# them are, so the cache does not outlive the run it was built for
+	$self->{pipe_endpoints}=undef;
+
+	# what the PIDs in a pipe chain get printed as
+	my %commands;
+	if ( $self->{pipe_chains} ){
+		foreach my $current_proc ( @{ $pt } ){
+			my $command;
+			if (
+				( defined( $current_proc->{cmndline} ) ) &&
+				( $current_proc->{cmndline} !~ /^[\ \t]*$/ )
+				){
+				$command=$current_proc->{cmndline};
+			}elsif ( defined( $current_proc->{fname} ) ){
+				$command=$current_proc->{fname};
+			}
+			if ( defined( $command ) ){
+				# a command line may contain newlines and the like, which
+				# would tear apart the single line a chain is printed on
+				$command=~s/\s+/ /g;
+				$command=~s/^\s+//;
+				$command=~s/\s+$//;
+				$commands{ $current_proc->pid }=$command;
+			}
+		}
 	}
 
 	my $toReturn='';
@@ -516,15 +573,10 @@ sub run{
 		# gets the open files
 		#
 		my $open_files='';
+		my $has_pipes=0;
 		my $pid=$proc->pid;
-		my $output_raw=`lsof -n -l -P -p $pid`;
-		if (
-			( $? == 0 ) ||
-			(
-			 ( $^O =~ /linux/ ) &&
-			 ( $? == 256 )
-			 )
-			){
+		my $files=$self->_lsof( '-p '.$pid );
+		if ( defined( $files ) ){
 
 			my $ftb = Text::ANSITable->new;
 			$ftb->border_style('Default::none_ascii');
@@ -551,68 +603,22 @@ sub run{
 			my %r_filehandles;
 			my %w_filehandles;
 			my %mem_filehandles;
-			my @lines=split(/\n/, $output_raw);
 
-			# lsof pads its columns out to fit the widest value in this
-			# run, so where each one starts and stops may only be worked
-			# out from the header of this batch of output. Offsets are
-			# used instead of splitting on whitespace as the width of the
-			# COMMAND column varies with the command name, DEVICE may
-			# overflow into the padding to the left of it, and NAME may
-			# contain whitespace.
-			my $header_int=0;
-			while (
-				   ( defined( $lines[$header_int] ) ) &&
-				   ( $lines[$header_int] !~ /^COMMAND[\ \t]/ )
-				   ){
-				$header_int++;
-			}
-			my @header_columns;
-			if ( defined( $lines[$header_int] ) ){
-				while ( $lines[$header_int] =~ /(\S+)/g ){
-					push( @header_columns, { start=>$-[1], end=>$+[1] } );
+			foreach my $file ( @{ $files } ){
+				my $fd=$file->{fd};
+				my $type=$file->{type};
+				my $device=$file->{device};
+				my $size_off=$file->{size_off};
+				my $node=$file->{node};
+				my $file_name=$file->{name};
+				my $match_name=$file->{match_name};
+
+				# noted so the pipe chains may be skipped entirely, and
+				# the system wide lsof they require avoided, for any
+				# process that does not have a pipe open
+				if ( $self->_isPipe( $type ) ){
+					$has_pipes=1;
 				}
-			}
-
-			# The columns of interest, counted back from NAME as it is
-			# always the last one. FD is not given a offset of its own as
-			# the access and lock characters are printed past the end of
-			# that column, placing it in the same region as TYPE.
-			my $last_column=$#header_columns;
-			my ( $user_end, $type_end, $device_end, $size_end, $node_end, $name_start );
-			if ( $last_column >= 6 ){
-				$user_end=$header_columns[ $last_column - 6 ]{end};
-				$type_end=$header_columns[ $last_column - 4 ]{end};
-				$device_end=$header_columns[ $last_column - 3 ]{end};
-				$size_end=$header_columns[ $last_column - 2 ]{end};
-				$node_end=$header_columns[ $last_column - 1 ]{end};
-				$name_start=$header_columns[ $last_column ]{start};
-			}
-
-			my $line_int=$header_int + 1;
-			while (
-				   ( defined( $name_start ) ) &&
-				   ( defined( $lines[$line_int] ) )
-				   ){
-				my $line=$lines[$line_int];
-
-				my ( $fd, $type )=split( /[\ \t]+/, $self->_column( $line, $user_end, $type_end ) );
-				if ( !defined( $fd ) ){
-					$fd='';
-				}
-				if ( !defined( $type ) ){
-					$type='';
-				}
-				my $device=$self->_column( $line, $type_end, $device_end );
-				my $size_off=$self->_column( $line, $device_end, $size_end );
-				my $node=$self->_column( $line, $size_end, $node_end );
-				my $file_name=$self->_column( $line, $name_start );
-
-				# lsof appends the file system, device, or the like to
-				# the name for some types, which is not wanted when
-				# matching on the name below
-				my $match_name=$file_name;
-				$match_name=~s/[\ \t]+\([^\)]*\)$//;
 
 				# checks if it is a line we don't want
 				my $dont_add=0;
@@ -721,8 +727,6 @@ sub run{
 								   $name,
 								   ]);
 				}
-
-				$line_int++;
 			}
 
 			# finalize deduping
@@ -837,6 +841,16 @@ sub run{
 													  );
 		$netstat=$ncnetstat->run;
 
+		#
+		# handle the pipe chains
+		#
+		my $pipe_chains='';
+		if (
+			( $self->{pipe_chains} ) &&
+			( $has_pipes )
+			){
+			$pipe_chains=$self->_pipeChainTable( $pid, \%commands );
+		}
 
 		#
 		# adds the new item
@@ -847,10 +861,116 @@ sub run{
 		}else{
 			$toReturn=$toReturn."\n\n";
 		}
-		$toReturn=$toReturn.$tb->draw.$open_files.$netstat;
+		$toReturn=$toReturn.$tb->draw.$open_files.$netstat.$pipe_chains;
 	}
 
 	return $toReturn;
+}
+
+#
+# Runs lsof with the additional arguments passed to it and returns a
+# array ref of hash refs, one per open file, with the keys pid, fd,
+# type, device, size_off, node, name, and match_name. Undef is returned
+# should lsof fail.
+#
+sub _lsof{
+	my $self=$_[0];
+	my $args=$_[1];
+
+	if ( !defined( $args ) ){
+		$args='';
+	}
+
+	my $output_raw=`lsof -n -l -P $args`;
+	if (
+		( $? != 0 ) &&
+		!(
+		  ( $^O =~ /linux/ ) &&
+		  ( $? == 256 )
+		  )
+		){
+		return undef;
+	}
+
+	my @lines=split(/\n/, $output_raw);
+
+	# lsof pads its columns out to fit the widest value in this run, so
+	# where each one starts and stops may only be worked out from the
+	# header of this batch of output. Offsets are used instead of
+	# splitting on whitespace as the width of the COMMAND column varies
+	# with the command name, DEVICE may overflow into the padding to the
+	# left of it, and NAME may contain whitespace.
+	my $header_int=0;
+	while (
+		   ( defined( $lines[$header_int] ) ) &&
+		   ( $lines[$header_int] !~ /^COMMAND[\ \t]/ )
+		   ){
+		$header_int++;
+	}
+	my @header_columns;
+	if ( defined( $lines[$header_int] ) ){
+		while ( $lines[$header_int] =~ /(\S+)/g ){
+			push( @header_columns, { start=>$-[1], end=>$+[1] } );
+		}
+	}
+
+	# The columns of interest, counted back from NAME as it is always the
+	# last one. FD is not given a offset of its own as the access and
+	# lock characters are printed past the end of that column, placing it
+	# in the same region as TYPE.
+	my $last_column=$#header_columns;
+	if ( $last_column < 7 ){
+		return [];
+	}
+	my $pid_end=$header_columns[ $last_column - 7 ]{end};
+	my $user_end=$header_columns[ $last_column - 6 ]{end};
+	my $type_end=$header_columns[ $last_column - 4 ]{end};
+	my $device_end=$header_columns[ $last_column - 3 ]{end};
+	my $size_end=$header_columns[ $last_column - 2 ]{end};
+	my $node_end=$header_columns[ $last_column - 1 ]{end};
+	my $name_start=$header_columns[ $last_column ]{start};
+
+	my @files;
+	my $line_int=$header_int + 1;
+	while ( defined( $lines[$line_int] ) ){
+		my $line=$lines[$line_int];
+		$line_int++;
+
+		my ( $fd, $type )=split( /[\ \t]+/, $self->_column( $line, $user_end, $type_end ) );
+		if ( !defined( $fd ) ){
+			$fd='';
+		}
+		if ( !defined( $type ) ){
+			$type='';
+		}
+
+		my $file_name=$self->_column( $line, $name_start );
+
+		# lsof appends the file system, device, or the like to the name
+		# for some types, which is not wanted when matching on the name
+		my $match_name=$file_name;
+		$match_name=~s/[\ \t]+\([^\)]*\)$//;
+
+		# the PID is the trailing part of the region it shares with
+		# COMMAND, which is used as the command name may contain spaces
+		my $file_pid='';
+		if ( $self->_column( $line, 0, $pid_end ) =~ /([0-9]+)$/ ){
+			$file_pid=$1;
+		}
+
+		push( @files, {
+					   pid=>$file_pid,
+					   fd=>$fd,
+					   type=>$type,
+					   device=>$self->_column( $line, $type_end, $device_end ),
+					   size_off=>$self->_column( $line, $device_end, $size_end ),
+					   node=>$self->_column( $line, $size_end, $node_end ),
+					   name=>$file_name,
+					   match_name=>$match_name,
+					   } );
+	}
+
+	return \@files;
 }
 
 #
@@ -879,6 +999,279 @@ sub _column{
 	$value=~s/[\ \t]+$//;
 
 	return $value;
+}
+
+#
+# Returns true if the lsof type passed to it is a pipe of some sort.
+#
+sub _isPipe{
+	my $self=$_[0];
+	my $type=$_[1];
+
+	if (
+		( $type =~ /^[Pp][Ii][Pp][Ee]$/ ) ||
+		( $type =~ /^[Ff][Ii][Ff][Oo]$/ )
+		){
+		return 1;
+	}
+
+	return 0;
+}
+
+#
+# Turns a pipe entry from _lsof into a endpoint, which is a hash ref with
+# the keys pid, fd, id, peer_id, and direction. Undef is returned if the
+# entry can't be tied to the far end of the pipe.
+#
+sub _pipeEndpoint{
+	my $self=$_[0];
+	my $file=$_[1];
+
+	# The two ends of a pipe are tied together differently depending upon
+	# what lsof reports. Systems such as FreeBSD point at the address of
+	# the far end via the name, while Linux gives both ends of a pipe the
+	# same inode via the node.
+	my ( $id, $peer_id );
+	if ( $file->{match_name} =~ /^\-\>(\S+)/ ){
+		$id=$file->{device};
+		$peer_id=$1;
+	}elsif ( $file->{node} =~ /^[0-9]+$/ ){
+		$id=$file->{node};
+		$peer_id=$file->{node};
+	}else{
+		return undef;
+	}
+
+	if (
+		( $id =~ /^$/ ) ||
+		( $file->{pid} =~ /^$/ )
+		){
+		return undef;
+	}
+
+	# The access characters are not printed for pipes on all systems, so
+	# the descriptor number is used as a fallback, 0 being the input and
+	# 1 and 2 being the output.
+	my $direction='';
+	if ( $file->{fd} =~ /w/ ){
+		$direction='w';
+	}elsif ( $file->{fd} =~ /r/ ){
+		$direction='r';
+	}elsif ( $file->{fd} =~ /^([0-9]+)/ ){
+		my $fd_number=$1;
+		if ( $fd_number == 0 ){
+			$direction='r';
+		}elsif (
+				( $fd_number == 1 ) ||
+				( $fd_number == 2 )
+				){
+			$direction='w';
+		}
+	}
+
+	return {
+			pid=>$file->{pid},
+			fd=>$file->{fd},
+			id=>$id,
+			peer_id=>$peer_id,
+			direction=>$direction,
+			};
+}
+
+#
+# Returns a hash ref of every pipe endpoint on the system, keyed by id,
+# so the far end of a pipe may be looked up by its peer_id. This requires
+# a system wide lsof, so the result is cached for the duration of the run.
+#
+sub _allPipeEndpoints{
+	my $self=$_[0];
+
+	if ( defined( $self->{pipe_endpoints} ) ){
+		return $self->{pipe_endpoints};
+	}
+
+	my %endpoints;
+	my $files=$self->_lsof;
+	if ( defined( $files ) ){
+		foreach my $file ( @{ $files } ){
+			if ( $self->_isPipe( $file->{type} ) ){
+				my $endpoint=$self->_pipeEndpoint( $file );
+				if ( defined( $endpoint ) ){
+					push( @{ $endpoints{ $endpoint->{id} } }, $endpoint );
+				}
+			}
+		}
+	}
+
+	$self->{pipe_endpoints}=\%endpoints;
+
+	return $self->{pipe_endpoints};
+}
+
+#
+# Walks the pipe edges out from the PID, returning a array ref of the
+# paths found, each of which includes the PID it started from. The seen
+# hash ref is what keeps it from looping back around on itself.
+#
+sub _pipeWalk{
+	my $self=$_[0];
+	my $edges=$_[1];
+	my $pid=$_[2];
+	my $seen=$_[3];
+
+	my %new_seen=%{ $seen };
+	$new_seen{$pid}=1;
+
+	# A process may sit on either end of more than one pipe, so the number
+	# of paths through a busy set of them can climb fast. Both how many
+	# are gathered and how far they are followed are capped to keep that
+	# from getting away.
+	my @paths;
+	if (
+		( defined( $edges->{$pid} ) ) &&
+		( keys( %new_seen ) < $self->{pipe_chain_max_depth} )
+		){
+		foreach my $next ( sort keys %{ $edges->{$pid} } ){
+			if ( defined( $new_seen{$next} ) ){
+				next;
+			}
+			foreach my $path ( @{ $self->_pipeWalk( $edges, $next, \%new_seen ) } ){
+				push( @paths, [ $pid, @{ $path } ] );
+				if ( $#paths >= $self->{pipe_chain_max} ){
+					return \@paths;
+				}
+			}
+		}
+	}
+
+	# a dead end is still a path, just a single item one
+	if ( !defined( $paths[0] ) ){
+		push( @paths, [ $pid ] );
+	}
+
+	return \@paths;
+}
+
+#
+# Returns a array ref of the pipelines the PID is a part of, each being a
+# array ref of PIDs in the order the data flows through them.
+#
+sub _pipeChains{
+	my $self=$_[0];
+	my $pid=$_[1];
+
+	my $endpoints=$self->_allPipeEndpoints;
+
+	# every pipe with a writer at one end and a reader at the other is a
+	# edge going from the writer to the reader
+	my %forward;
+	my %backward;
+	foreach my $id ( keys %{ $endpoints } ){
+		foreach my $endpoint ( @{ $endpoints->{$id} } ){
+			if (
+				( $endpoint->{direction} ne 'w' ) ||
+				( !defined( $endpoints->{ $endpoint->{peer_id} } ) )
+				){
+				next;
+			}
+			foreach my $peer ( @{ $endpoints->{ $endpoint->{peer_id} } } ){
+				# both ends share a id on systems that tie them together
+				# via the node, so the endpoint itself has to be skipped
+				if (
+					( $peer->{pid} eq $endpoint->{pid} ) &&
+					( $peer->{fd} eq $endpoint->{fd} )
+					){
+					next;
+				}
+				if ( $peer->{direction} ne 'r' ){
+					next;
+				}
+				$forward{ $endpoint->{pid} }{ $peer->{pid} }=1;
+				$backward{ $peer->{pid} }{ $endpoint->{pid} }=1;
+			}
+		}
+	}
+
+	my @chains;
+	foreach my $head ( @{ $self->_pipeWalk( \%backward, $pid, {} ) } ){
+		foreach my $tail ( @{ $self->_pipeWalk( \%forward, $pid, {} ) } ){
+			# both walks start from the PID, so the head is flipped around
+			# and the duplicate copy of it dropped off of the tail
+			my @chain=( reverse( @{ $head } ), @{ $tail }[ 1 .. $#{ $tail } ] );
+			push( @chains, \@chain );
+			if ( $#chains >= $self->{pipe_chain_max} ){
+				return \@chains;
+			}
+		}
+	}
+
+	return \@chains;
+}
+
+#
+# Renders the command used for a PID in a pipe chain, truncating it as
+# needed. A ? is used for any process that can't be looked up.
+#
+sub _pipeCommand{
+	my $self=$_[0];
+	my $pid=$_[1];
+	my $commands=$_[2];
+
+	my $command='?';
+	if ( defined( $commands->{$pid} ) ){
+		$command=$commands->{$pid};
+	}
+
+	if ( length( $command ) > $self->{pipe_command_length} ){
+		$command=substr( $command, 0, $self->{pipe_command_length} ).'...';
+	}
+
+	return $command.'('.$pid.')';
+}
+
+#
+# Builds the pipe chain table for a PID, returning a empty string if
+# there is nothing worth showing.
+#
+sub _pipeChainTable{
+	my $self=$_[0];
+	my $pid=$_[1];
+	my $commands=$_[2];
+
+	my @rows;
+	foreach my $chain ( @{ $self->_pipeChains( $pid ) } ){
+		# a chain of just the process itself says nothing, which is what
+		# is left over when the far end of every pipe is out of reach
+		if ( $#{ $chain } < 1 ){
+			next;
+		}
+
+		my @parts;
+		foreach my $chain_pid ( @{ $chain } ){
+			my $command=$self->_pipeCommand( $chain_pid, $commands );
+			if ( $chain_pid eq $pid ){
+				push( @parts, color( $self->{processColor} ).$command.color('reset') );
+			}else{
+				push( @parts, color( $self->{valColor} ).$command.color('reset') );
+			}
+		}
+
+		push( @rows, [ join( color( $self->{varColor} ).' | '.color('reset'), @parts ) ] );
+	}
+
+	if ( !defined( $rows[0] ) ){
+		return '';
+	}
+
+	my $ctb = Text::ANSITable->new;
+	$ctb->border_style('Default::none_ascii');
+	$ctb->color_theme('Default::no_color');
+	$ctb->show_header(1);
+	$ctb->set_column_style(0, pad => 0);
+	$ctb->columns([ color( $self->{varColor} ).'PIPE CHAINS'.color('reset') ]);
+	$ctb->add_rows( \@rows );
+
+	return $ctb->draw;
 }
 
 =head2 timeString

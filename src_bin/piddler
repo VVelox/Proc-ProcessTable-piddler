@@ -6,7 +6,7 @@ use Getopt::Long;
 use Proc::ProcessTable::piddler;
 
 sub version{
-        print "piddler v. 0.2.0\n";
+        print "piddler v. 0.3.0\n";
 	}
 
 sub help{
@@ -18,6 +18,7 @@ sub help{
 --version Print the version info.
 
 -a        Show a_inodes.
+-c        Do not show pipe chains.
 -d        Do not dedup.
 -f        Show FIFOs.
 -m        Show memory mapped libraries of the REG type.
@@ -43,6 +44,7 @@ my $no_color=0;
 my $a_inode=0;
 my $fifo=0;
 my $memreglib=0;
+my $dont_pipe_chains=0;
 
 # get the commandline options
 Getopt::Long::Configure ('no_ignore_case');
@@ -62,6 +64,7 @@ GetOptions(
 		   'f' => \$fifo,
 		   'a' => \$a_inode,
 		   'm' => \$memreglib,
+		   'c' => \$dont_pipe_chains,
 		   );
 
 # print the version info if requested
@@ -121,6 +124,10 @@ if ( defined( $ENV{PIDDLER_fifo} ) ){
 if ( defined( $ENV{PIDDLER_dont_dedup} ) ){
 	$dont_dedup = $dont_dedup ^ ( $ENV{PIDDLER_dont_dedup} ? 1 : 0 );
 }
+# XOR the -c if needed
+if ( defined( $ENV{PIDDLER_dont_pipe_chains} ) ){
+	$dont_pipe_chains = $dont_pipe_chains ^ ( $ENV{PIDDLER_dont_pipe_chains} ? 1 : 0 );
+}
 # XOR the -n if needed
 if ( defined( $ENV{PIDDLER_dont_resolv} ) ){
 	$dont_resolv = $dont_resolv ^ ( $ENV{PIDDLER_dont_resolv} ? 1 : 0 );
@@ -153,6 +160,7 @@ my $ppp=Proc::ProcessTable::piddler->new(
 										  dont_dedup=>$dont_dedup,
 										  dont_resolv=>$dont_resolv,
 										  memreglib=>$memreglib,
+										  pipe_chains=>( $dont_pipe_chains ? 0 : 1 ),
 										  }
 										 );
 
@@ -165,7 +173,7 @@ piddler - Display all process table, open files, and network connections for a P
 
 =head1 SYNOPSIS
 
-piddler [B<-a>] [B<-d>] [B<-f>] [B<-m>] [B<-n>] [B<--nc>] [B<-p>] [B<-r>] [B<-t>] [B<-u>] <PID>[,<PID>...]
+piddler [B<-a>] [B<-c>] [B<-d>] [B<-f>] [B<-m>] [B<-n>] [B<--nc>] [B<-p>] [B<-r>] [B<-t>] [B<-u>] <PID>[,<PID>...]
 
 piddler [B<-h>|B<--help>]
 
@@ -176,6 +184,10 @@ piddler [B<-v>|B<--version>]
 =head2 -a
 
 Show a_inodes.
+
+=head2 -c
+
+Do not show pipe chains.
 
 =head2 -d
 
@@ -246,6 +258,10 @@ same as B<-t>.
 
 If set to 1, pipes will be shown, the same as B<-p>.
 
+=head2 PIDDLER_dont_pipe_chains
+
+If set to 1, pipe chains will not be shown, the same as B<-c>.
+
 =head2 PIDDLER_unix
 
 If set to 1, unix sockets will be shown, the same as B<-u>.
@@ -263,6 +279,30 @@ as B<-d>.
 
 If set to 1, PTR addresses will not be resolved for
 network connections, the same as B<-n>.
+
+=head1 PIPE CHAINS
+
+By default a section is shown for the pipelines the process is a part
+of, with the commands printed in the order the data flows through them.
+B<-c> turns this off.
+
+    PIPE CHAINS
+    ps auxw(4821) | grep foo(4822) | wc -l(4823)
+
+Commands longer than 40 characters are truncated. Any process that can
+not be looked up, such as one belonging to another user when not running
+as root, is shown as a ?. A process may sit on more than one pipe, so at
+most 16 chains are shown for any one of them.
+
+Tying the two ends of a pipe together requires a system wide lsof, so it
+is only run for processes that actually have a pipe open, and only once
+no matter how many PIDs are given.
+
+The direction of a pipe is taken from the r and w access characters when
+lsof reports them. Systems such as FreeBSD report pipes as being open
+read/write instead, in which case the descriptor number is used, 0 being
+the input and 1 and 2 being the output. On those systems that means only
+pipes on stdin, stdout, and stderr may be chained together.
 
 =head1 FILE HANDLE DEDUPING
 

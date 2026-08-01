@@ -8,6 +8,7 @@ Display all process table, open files, and network connections for a PID.
 # Command Line Options
 ```
 -a        Show a_inodes.
+-c        Do not show pipe chains.
 -d        Do not dedup.
 -f        Show FIFOs.
 -m        Show memory mapped libraries of the REG type.
@@ -35,6 +36,7 @@ Unless set to defined ands set to 1, these will default to 0.
 | PIDDLER_fifo | If set to 1, FIFOs will not be shown. |
 | PIDDLER_memreglib | If set to 1, memory mapped libraries with the type REG will be shown. |
 | PIDDLER_pipe | If set to 1, pipes will not be shown. |
+| PIDDLER_dont_pipe_chains | If set to 1, pipe chains will not be shown. |
 | PIDDLER_txt | If set to 1, libraries with the TXT type will not be shown. |
 | PIDDLER_unix | If set to 1, unix socket will not be shown. |
 | PIDDLER_vregroot | If set to 1, VREG / will not be shown. |
