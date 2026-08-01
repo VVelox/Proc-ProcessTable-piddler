@@ -10,7 +10,8 @@ my %WriteMakefileArgs = (
 						 ABSTRACT_FROM    => 'lib/Proc/ProcessTable/piddler.pm',
 						 LICENSE          => 'artistic_2',
 						 MIN_PERL_VERSION => '5.006',
-						 EXE_FILES        => [ 'bin/piddler' ],
+						 INST_SCRIPT      => 'bin',
+						 EXE_FILES        => [ 'src_bin/piddler' ],
 						 CONFIGURE_REQUIRES => {
 												'ExtUtils::MakeMaker' => '0',
 												},
