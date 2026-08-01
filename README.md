@@ -10,15 +10,15 @@ Display all process table, open files, and network connections for a PID.
 -a        Show a_inodes.
 -c        Do not show pipe chains.
 -d        Do not dedup.
--f        Show FIFOs.
+-f        Do not show FIFOs.
 -m        Show memory mapped libraries of the REG type.
 -n        Do not resolve PTR addresses.
 --nc      Disable color.
--p        Show pipes.
+-p        Do not show pipes.
 -r        Show show VREG / files.
 -t        Show shared libraries.
 -u        Do not show unix sockets.
--U        Do not resolve unix socket peers.
+-E        Do not resolve pipe, FIFO, and unix socket peers.
 ```
 
 # Enviromental Variables
@@ -34,13 +34,13 @@ Unless set to defined ands set to 1, these will default to 0.
 | PIDDLER_dont_dedup | If set to 1, duplicate file handles are removed. |
 | PIDDLER_dont_resolv | If set to 1, PTR addresses will not be resolved for network connections. |
 | PIDDLER_a_inode | If set to 1, a_inode types will be shown. |
-| PIDDLER_fifo | If set to 1, FIFOs will not be shown. |
+| PIDDLER_dont_fifo | If set to 1, FIFOs will not be shown. |
 | PIDDLER_memreglib | If set to 1, memory mapped libraries with the type REG will be shown. |
-| PIDDLER_pipe | If set to 1, pipes will not be shown. |
+| PIDDLER_dont_pipe | If set to 1, pipes will not be shown. |
 | PIDDLER_dont_pipe_chains | If set to 1, pipe chains will not be shown. |
 | PIDDLER_txt | If set to 1, libraries with the TXT type will not be shown. |
 | PIDDLER_dont_unix | If set to 1, unix sockets will not be shown. |
-| PIDDLER_dont_unix_peers | If set to 1, unix socket peers will not be resolved. |
+| PIDDLER_dont_peers | If set to 1, pipe, FIFO, and unix socket peers will not be resolved. |
 | PIDDLER_vregroot | If set to 1, VREG / will not be shown. |
 
 # Installing

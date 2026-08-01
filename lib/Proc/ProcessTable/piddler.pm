@@ -27,11 +27,12 @@ our $VERSION = '0.3.0';
 
     use Proc::ProcessTable::piddler;
 
-    # skip over the less useful stuff by default for less spammy output
+    # skip over the less useful stuff for less spammy output
     my $args={
               txt=>0,
               unix=>0,
               pipe=>0,
+              fifo=>0,
               vregroot=>0,
               dont_dedup=>0,
               dont_resolv=>0,
@@ -54,6 +55,7 @@ of options.
               txt=>0,
               unix=>0,
               pipe=>0,
+              fifo=>0,
               vregroot=>0,
               dont_dedup=>0,
               dont_resolv=>0,
@@ -96,7 +98,7 @@ Defaults to 0, false.
 
 Print FIFOs.
 
-Defaults to 0, false.
+Defaults to 1, true.
 
 =head4 memreglib
 
@@ -112,11 +114,46 @@ The following are used to match libraries.
 
 Defaults to 0, false.
 
+=head4 peers
+
+For each pipe, FIFO, and unix socket printed, show the command holding
+the far end of it.
+
+    FD  TYPE DEVICE             SIZE/OFF NODE      NAME
+    7u  unix 0xfffff80022630400 0                  ->0xfffff80022635000 (dbus-daemon --session(51092))
+    14u unix 0xfffff80052dee800 0                  /tmp/dbus-nWRW4XDDoD (xfce4-panel(63471))
+    3r  FIFO 0,230              0t0      299839014 /tmp/testfifo (cat(12593))
+
+The far end is found either by way of the endpoint this one points at,
+by way of whatever points at this one, or by way of what else has the
+same one open. The second is what covers the unix sockets lsof names
+after the path they are bound to, such as the accepted end of a
+connection, and the third the FIFOs and, on Linux, pipes that both ends
+share a inode for.
+
+Commands longer than 40 characters are truncated. A endpoint whose far
+end can not be looked up, such as one held by another user's process when
+not running as root, is shown as a ?. Nothing is shown for one that has
+no far end to speak of, such as a unix socket that is only bound and
+listening or a FIFO no one else has open. A endpoint may be held by more
+than one process, such as after a fork, in which case all of them are
+listed.
+
+Tying the two ends together requires a system wide lsof, so it is only
+run when a pipe, FIFO, or unix socket is actually going to be printed,
+meaning turning L</pipe>, L</fifo>, and L</unix> all off turns this off
+as well, and only once per call to run.
+
+Unix sockets are only tied together on systems whose lsof points at the
+far end of one, such as FreeBSD.
+
+Defaults to 1, true.
+
 =head4 pipe
 
 Print pipes.
 
-Defaults to 0, false.
+Defaults to 1, true.
 
 =head4 pipe_chains
 
@@ -152,38 +189,6 @@ Defaults to 0, false.
 =head4 unix
 
 Print unix sockets.
-
-Defaults to 1, true.
-
-=head4 unix_peers
-
-For each connected unix socket printed, show the command holding the far
-end of it.
-
-    FD  TYPE DEVICE             SIZE/OFF NODE NAME
-    7u  unix 0xfffff80022630400 0             ->0xfffff80022635000 (dbus-daemon --session(51092))
-
-The far end is found either by way of the socket this one points at or
-by way of whatever points at this one, the latter being what covers the
-sockets lsof names after the path they are bound to, such as the
-accepted end of a connection.
-
-    14u unix 0xfffff80052dee800 0             /tmp/dbus-nWRW4XDDoD (xfce4-panel(63471))
-
-Commands longer than 40 characters are truncated. A socket whose far end
-can not be looked up, such as one held by another user's process when not
-running as root, is shown as a ?. Nothing is shown for a socket that is
-only bound and listening, as there is no one far end to it. A socket may
-be held by more than one process, such as after a fork, in which case all
-of them are listed.
-
-Tying the two ends of a socket together requires a system wide lsof, so
-it is only run when a unix socket is actually going to be printed,
-meaning turning L</unix> off turns this off as well, and only once per
-call to run.
-
-Only systems whose lsof points at the far end of a socket, such as
-FreeBSD, are currently supported.
 
 Defaults to 1, true.
 
@@ -252,16 +257,16 @@ sub new{
 				is=>Proc::ProcessTable::InfoString->new,
 				environ=>'BRIGHT_MAGENTA',
 				txt=>0,
-				pipe=>0,
+				pipe=>1,
 				unix=>1,
 				vregroot=>0,
 				dont_dedup=>0,
 				dont_resolv=>0,
-				fifo=>0,
+				fifo=>1,
 				a_inode=>0,
 				memreglib=>0,
 				pipe_chains=>1,
-				unix_peers=>1,
+				peers=>1,
 				peer_command_length=>40,
 				pipe_chain_max=>16,
 				pipe_chain_max_depth=>32,
@@ -270,7 +275,7 @@ sub new{
 
 	my @arg_feed=(
 				  'txt', 'pipe', 'unix', 'vregroot', 'dont_dedup', 'dont_resolv',
-				  'fifo', 'a_inode', 'memreglib', 'pipe_chains', 'unix_peers'
+				  'fifo', 'a_inode', 'memreglib', 'pipe_chains', 'peers'
 				   );
 
 	foreach my $feed ( @arg_feed ){
@@ -360,14 +365,14 @@ sub run{
 	# them are, so the caches do not outlive the run they were built for
 	$self->{all_files}=undef;
 	$self->{pipe_endpoints}=undef;
-	$self->{unix_peer_pids}=undef;
+	$self->{peer_pids}=undef;
 
-	# what the PIDs in a pipe chain or on the far end of a unix socket
-	# get printed as
+	# what the PIDs in a pipe chain or on the far end of a endpoint get
+	# printed as
 	my %commands;
 	if (
 		( $self->{pipe_chains} ) ||
-		( $self->{unix_peers} )
+		( $self->{peers} )
 		){
 		foreach my $current_proc ( @{ $pt } ){
 			my $command;
@@ -715,15 +720,18 @@ sub run{
 				# begin deduping
 				my $name= color( $self->{file_colors}[5] ).$file_name.color( 'reset' );
 
-				# tie the far end of a connected unix socket to whatever is
-				# holding it, which is only worth the system wide lsof it
-				# takes for a socket that is going to be printed
+				# tie the far end of a pipe, FIFO, or unix socket to whatever
+				# is holding it, which is only worth the system wide lsof it
+				# takes for one that is going to be printed
 				if (
 					( ! $dont_add ) &&
-					( $self->{unix_peers} ) &&
-					( $self->_isUnix( $type ) )
+					( $self->{peers} ) &&
+					(
+					 ( $self->_isUnix( $type ) ) ||
+					 ( $self->_isPipe( $type ) )
+					 )
 					){
-					my $peer=$self->_unixPeerCommands( $file, \%commands );
+					my $peer=$self->_peerCommands( $file, \%commands );
 					if ( defined( $peer ) ){
 						$name=$name.' '.color( $self->{valColor} ).'('.$peer.')'.color( 'reset' );
 					}
@@ -934,7 +942,10 @@ sub _lsof{
 		$args='';
 	}
 
-	my $output_raw=`lsof -n -l -P $args`;
+	# lsof has a habit of warning about things of no interest here, such
+	# as rebuilding its device cache or a directory it could not read, so
+	# stderr is sent off to be forgotten about
+	my $output_raw=`lsof -n -l -P $args 2> /dev/null`;
 	if (
 		( $? != 0 ) &&
 		!(
@@ -1103,27 +1114,16 @@ sub _pipeEndpoint{
 	my $self=$_[0];
 	my $file=$_[1];
 
-	# The two ends of a pipe are tied together differently depending upon
-	# what lsof reports. Systems such as FreeBSD point at the address of
-	# the far end via the name, while Linux gives both ends of a pipe the
-	# same inode via the node.
-	my ( $id, $peer_id );
-	if ( $file->{match_name} =~ /^\-\>(\S+)/ ){
-		$id=$file->{device};
-		$peer_id=$1;
-	}elsif ( $file->{node} =~ /^[0-9]+$/ ){
-		$id=$file->{node};
-		$peer_id=$file->{node};
-	}else{
-		return undef;
-	}
-
+	my $ids=$self->_peerIDs( $file );
 	if (
-		( $id =~ /^$/ ) ||
+		( !defined( $ids ) ) ||
+		( !defined( $ids->{peer_id} ) ) ||
 		( $file->{pid} =~ /^$/ )
 		){
 		return undef;
 	}
+	my $id=$ids->{id};
+	my $peer_id=$ids->{peer_id};
 
 	# The access characters are not printed for pipes on all systems, so
 	# the descriptor number is used as a fallback, 0 being the input and
@@ -1196,20 +1196,51 @@ sub _isUnix{
 }
 
 #
-# Returns the ID of the socket on the far end of a unix socket entry from
-# _lsof, or undef if the entry is not a connected socket that can be tied
-# to one.
+# Works out the IDs used to tie the two ends of a pipe, FIFO, or unix
+# socket entry from _lsof together, returning a hash ref with the keys id
+# and peer_id. The peer_id is undef when the entry names no far end of
+# its own, such as a unix socket lsof names after the path it is bound
+# to, and undef is returned for anything that has no ID at all.
 #
-sub _unixPeerID{
+sub _peerIDs{
 	my $self=$_[0];
 	my $file=$_[1];
 
-	# Systems such as FreeBSD point at the far end of a connected socket
-	# via the name, the same as they do for pipes. Linux reports nothing
-	# of the sort, where working it out would mean lsof +E or ss -x, so
-	# nothing is tied together there for the moment.
-	if ( $file->{match_name} =~ /^\-\>(\S+)/ ){
-		return $1;
+	my $class;
+	if ( $self->_isUnix( $file->{type} ) ){
+		$class='unix';
+	}elsif ( $self->_isPipe( $file->{type} ) ){
+		$class='pipe';
+	}else{
+		return undef;
+	}
+
+	# Systems such as FreeBSD point at the address of the far end via the
+	# name. Linux does so for neither, but does give both ends of a pipe
+	# or FIFO the same inode via the node, which unix sockets do not
+	# share, working those out there meaning lsof +E or ss -x.
+	if (
+		( $file->{match_name} =~ /^\-\>(\S+)/ ) &&
+		( $file->{device} !~ /^$/ )
+		){
+		return {
+				id=>$class.':'.$file->{device},
+				peer_id=>$class.':'.$1,
+				};
+	}elsif (
+			( $class eq 'pipe' ) &&
+			( $file->{node} =~ /^[0-9]+$/ )
+			){
+		my $id=$class.':'.$file->{device}.':'.$file->{node};
+		return {
+				id=>$id,
+				peer_id=>$id,
+				};
+	}elsif ( $file->{device} !~ /^$/ ){
+		return {
+				id=>$class.':'.$file->{device},
+				peer_id=>undef,
+				};
 	}
 
 	return undef;
@@ -1217,81 +1248,89 @@ sub _unixPeerID{
 
 #
 # Returns a hash ref with the keys holders and pointers, both of which
-# are hash refs of PIDs keyed by a socket ID. The holders are the PIDs
-# with that socket open and the pointers the PIDs whose socket points at
-# it, which are the two ways the far end of a socket may be found. This
+# are hash refs of PIDs keyed by a endpoint ID. The holders are the PIDs
+# with that endpoint open and the pointers the PIDs whose endpoint points
+# at it, which are the two ways the far end of one may be found. This
 # requires a system wide lsof, so the result is cached for the duration
 # of the run.
 #
-sub _allUnixPeers{
+sub _allPeers{
 	my $self=$_[0];
 
-	if ( defined( $self->{unix_peer_pids} ) ){
-		return $self->{unix_peer_pids};
+	if ( defined( $self->{peer_pids} ) ){
+		return $self->{peer_pids};
 	}
 
 	my %holders;
 	my %pointers;
-	# a socket may be open on more than one FD in a process, which is
+	# a endpoint may be open on more than one FD in a process, which is
 	# worth mentioning no more than once
 	my %seen_holder;
 	my %seen_pointer;
 	foreach my $file ( @{ $self->_allFiles } ){
+		my $ids=$self->_peerIDs( $file );
 		if (
-			( ! $self->_isUnix( $file->{type} ) ) ||
+			( !defined( $ids ) ) ||
 			( $file->{pid} =~ /^$/ )
 			){
 			next;
 		}
 
-		if (
-			( $file->{device} !~ /^$/ ) &&
-			( !defined( $seen_holder{ $file->{device} }{ $file->{pid} } ) )
-			){
-			$seen_holder{ $file->{device} }{ $file->{pid} }=1;
-			push( @{ $holders{ $file->{device} } }, $file->{pid} );
+		if ( !defined( $seen_holder{ $ids->{id} }{ $file->{pid} } ) ){
+			$seen_holder{ $ids->{id} }{ $file->{pid} }=1;
+			push( @{ $holders{ $ids->{id} } }, $file->{pid} );
 		}
 
-		my $peer_id=$self->_unixPeerID( $file );
 		if (
-			( defined( $peer_id ) ) &&
-			( !defined( $seen_pointer{$peer_id}{ $file->{pid} } ) )
+			( defined( $ids->{peer_id} ) ) &&
+			( !defined( $seen_pointer{ $ids->{peer_id} }{ $file->{pid} } ) )
 			){
-			$seen_pointer{$peer_id}{ $file->{pid} }=1;
-			push( @{ $pointers{$peer_id} }, $file->{pid} );
+			$seen_pointer{ $ids->{peer_id} }{ $file->{pid} }=1;
+			push( @{ $pointers{ $ids->{peer_id} } }, $file->{pid} );
 		}
 	}
 
-	$self->{unix_peer_pids}={
-							 holders=>\%holders,
-							 pointers=>\%pointers,
-							 };
+	$self->{peer_pids}={
+						holders=>\%holders,
+						pointers=>\%pointers,
+						};
 
-	return $self->{unix_peer_pids};
+	return $self->{peer_pids};
 }
 
 #
-# Renders the commands holding the far end of a unix socket entry from
-# _lsof. Undef is returned if there is nothing to be said about the far
-# end and a ? if the socket has one that is out of reach.
+# Renders the commands holding the far end of a pipe, FIFO, or unix
+# socket entry from _lsof. Undef is returned if there is nothing to be
+# said about the far end and a ? if the entry has one that is out of
+# reach.
 #
-sub _unixPeerCommands{
+sub _peerCommands{
 	my $self=$_[0];
 	my $file=$_[1];
 	my $commands=$_[2];
 
-	my $peers=$self->_allUnixPeers;
+	my $ids=$self->_peerIDs( $file );
+	if ( !defined( $ids ) ){
+		return undef;
+	}
+
+	my $peers=$self->_allPeers;
 
 	my @peer_pids;
 	my %seen;
+	# both ends share a ID on systems that tie them together via the node,
+	# where the process itself is always one of the holders, which says
+	# nothing worth printing
+	if ( defined( $ids->{peer_id} ) && ( $ids->{peer_id} eq $ids->{id} ) ){
+		$seen{ $file->{pid} }=1;
+	}
 
-	# whatever holds the socket this one points at is on the far end of it
-	my $peer_id=$self->_unixPeerID( $file );
+	# whatever holds the endpoint this one points at is on the far end
 	if (
-		( defined( $peer_id ) ) &&
-		( defined( $peers->{holders}{$peer_id} ) )
+		( defined( $ids->{peer_id} ) ) &&
+		( defined( $peers->{holders}{ $ids->{peer_id} } ) )
 		){
-		foreach my $peer_pid ( @{ $peers->{holders}{$peer_id} } ){
+		foreach my $peer_pid ( @{ $peers->{holders}{ $ids->{peer_id} } } ){
 			if ( !defined( $seen{$peer_pid} ) ){
 				$seen{$peer_pid}=1;
 				push( @peer_pids, $peer_pid );
@@ -1299,14 +1338,11 @@ sub _unixPeerCommands{
 		}
 	}
 
-	# and so is whatever points at this socket, which is the only way
-	# around for the ones lsof names after the path they are bound to,
-	# such as the accepted end of a connection
-	if (
-		( $file->{device} !~ /^$/ ) &&
-		( defined( $peers->{pointers}{ $file->{device} } ) )
-		){
-		foreach my $peer_pid ( @{ $peers->{pointers}{ $file->{device} } } ){
+	# and so is whatever points at this endpoint, which is the only way
+	# around for the unix sockets lsof names after the path they are bound
+	# to, such as the accepted end of a connection
+	if ( defined( $peers->{pointers}{ $ids->{id} } ) ){
+		foreach my $peer_pid ( @{ $peers->{pointers}{ $ids->{id} } } ){
 			if ( !defined( $seen{$peer_pid} ) ){
 				$seen{$peer_pid}=1;
 				push( @peer_pids, $peer_pid );
@@ -1315,10 +1351,14 @@ sub _unixPeerCommands{
 	}
 
 	if ( !defined( $peer_pids[0] ) ){
-		# a socket lsof points somewhere with is known to have a far end,
-		# so say that it could not be reached, while one named after a
-		# path may just be listening, where there is nothing to say
-		if ( defined( $peer_id ) ){
+		# a endpoint lsof points somewhere with is known to have a far end,
+		# so say that it could not be reached, while one that shares a ID
+		# with the far end or is named after a path may just be a FIFO or
+		# socket nothing else has open, where there is nothing to say
+		if (
+			( defined( $ids->{peer_id} ) ) &&
+			( $ids->{peer_id} ne $ids->{id} )
+			){
 			return '?';
 		}
 		return undef;

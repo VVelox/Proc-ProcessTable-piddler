@@ -20,15 +20,15 @@ sub help{
 -a        Show a_inodes.
 -c        Do not show pipe chains.
 -d        Do not dedup.
--f        Show FIFOs.
+-f        Do not show FIFOs.
 -m        Show memory mapped libraries of the REG type.
 -n        Do not resolve PTR addresses.
 --nc      Disable color.
--p        Show pipes.
+-p        Do not show pipes.
 -r        Show VREG / files.
 -t        Show shared libraries.
 -u        Do not show unix sockets.
--U        Do not resolve unix socket peers.
+-E        Do not resolve pipe, FIFO, and unix socket peers.
 ';
 	}
 
@@ -36,17 +36,17 @@ sub help{
 my $version;
 my $help;
 my $txt=0;
-my $pipe=0;
+my $dont_pipe=0;
 my $dont_unix=0;
 my $vregroot=0;
 my $dont_dedup=0;
 my $dont_resolv=0;
 my $no_color=0;
 my $a_inode=0;
-my $fifo=0;
+my $dont_fifo=0;
 my $memreglib=0;
 my $dont_pipe_chains=0;
-my $dont_unix_peers=0;
+my $dont_peers=0;
 
 # get the commandline options
 Getopt::Long::Configure ('no_ignore_case');
@@ -57,14 +57,14 @@ GetOptions(
 		   'v' => \$version,
 		   'version' => \$version,
 		   't' => \$txt,
-		   'p' => \$pipe,
+		   'p' => \$dont_pipe,
 		   'u' => \$dont_unix,
-		   'U' => \$dont_unix_peers,
+		   'E' => \$dont_peers,
 		   'r' => \$vregroot,
 		   'd' => \$dont_dedup,
 		   'n' => \$dont_resolv,
 		   'nc' => \$no_color,
-		   'f' => \$fifo,
+		   'f' => \$dont_fifo,
 		   'a' => \$a_inode,
 		   'm' => \$memreglib,
 		   'c' => \$dont_pipe_chains,
@@ -100,8 +100,8 @@ if ( defined( $ENV{PIDDLER_txt} ) ){
 	$txt = $txt ^ ( $ENV{PIDDLER_txt} ? 1 : 0 );
 }
 # XOR the -p if needed
-if ( defined( $ENV{PIDDLER_pipe} ) ){
-	$pipe = $pipe ^ ( $ENV{PIDDLER_pipe} ? 1 : 0 );
+if ( defined( $ENV{PIDDLER_dont_pipe} ) ){
+	$dont_pipe = $dont_pipe ^ ( $ENV{PIDDLER_dont_pipe} ? 1 : 0 );
 }
 # XOR the -u if needed
 if ( defined( $ENV{PIDDLER_dont_unix} ) ){
@@ -120,8 +120,8 @@ if ( defined( $ENV{PIDDLER_a_inode} ) ){
 	$a_inode = $a_inode ^ ( $ENV{PIDDLER_a_inode} ? 1 : 0 );
 }
 # XOR the -f if needed
-if ( defined( $ENV{PIDDLER_fifo} ) ){
-	$fifo = $fifo ^ ( $ENV{PIDDLER_fifo} ? 1 : 0 );
+if ( defined( $ENV{PIDDLER_dont_fifo} ) ){
+	$dont_fifo = $dont_fifo ^ ( $ENV{PIDDLER_dont_fifo} ? 1 : 0 );
 }
 # XOR the -d if needed
 if ( defined( $ENV{PIDDLER_dont_dedup} ) ){
@@ -131,9 +131,9 @@ if ( defined( $ENV{PIDDLER_dont_dedup} ) ){
 if ( defined( $ENV{PIDDLER_dont_pipe_chains} ) ){
 	$dont_pipe_chains = $dont_pipe_chains ^ ( $ENV{PIDDLER_dont_pipe_chains} ? 1 : 0 );
 }
-# XOR the -U if needed
-if ( defined( $ENV{PIDDLER_dont_unix_peers} ) ){
-	$dont_unix_peers = $dont_unix_peers ^ ( $ENV{PIDDLER_dont_unix_peers} ? 1 : 0 );
+# XOR the -E if needed
+if ( defined( $ENV{PIDDLER_dont_peers} ) ){
+	$dont_peers = $dont_peers ^ ( $ENV{PIDDLER_dont_peers} ? 1 : 0 );
 }
 # XOR the -n if needed
 if ( defined( $ENV{PIDDLER_dont_resolv} ) ){
@@ -160,15 +160,15 @@ my $ppp=Proc::ProcessTable::piddler->new(
 										 {
 										  txt=>$txt,
 										  unix=>( $dont_unix ? 0 : 1 ),
-										  pipe=>$pipe,
+										  pipe=>( $dont_pipe ? 0 : 1 ),
 										  a_inode=>$a_inode,
-										  fifo=>$fifo,
+										  fifo=>( $dont_fifo ? 0 : 1 ),
 										  vregroot=>$vregroot,
 										  dont_dedup=>$dont_dedup,
 										  dont_resolv=>$dont_resolv,
 										  memreglib=>$memreglib,
 										  pipe_chains=>( $dont_pipe_chains ? 0 : 1 ),
-										  unix_peers=>( $dont_unix_peers ? 0 : 1 ),
+										  peers=>( $dont_peers ? 0 : 1 ),
 										  }
 										 );
 
@@ -181,7 +181,7 @@ piddler - Display all process table, open files, and network connections for a P
 
 =head1 SYNOPSIS
 
-piddler [B<-a>] [B<-c>] [B<-d>] [B<-f>] [B<-m>] [B<-n>] [B<--nc>] [B<-p>] [B<-r>] [B<-t>] [B<-u>] [B<-U>] <PID>[,<PID>...]
+piddler [B<-a>] [B<-c>] [B<-d>] [B<-f>] [B<-m>] [B<-n>] [B<--nc>] [B<-p>] [B<-r>] [B<-t>] [B<-u>] [B<-E>] <PID>[,<PID>...]
 
 piddler [B<-h>|B<--help>]
 
@@ -203,7 +203,7 @@ Do not dedup.
 
 =head2 -f
 
-Show FIFOs.
+Do not show FIFOs.
 
 =head2 -m
 
@@ -219,7 +219,7 @@ Disable color..
 
 =head2 -p
 
-Show pipes.
+Do not show pipes.
 
 =head2 -r
 
@@ -233,9 +233,9 @@ Show shared libraries.
 
 Do not show unix sockets.
 
-=head2 -U
+=head2 -E
 
-Do not resolve unix socket peers.
+Do not resolve pipe, FIFO, and unix socket peers.
 
 =head1 ENVIRONMENTAL VARIABLES
 
@@ -252,9 +252,9 @@ as B<--nc>.
 
 If set to 1, a_inode types will be shown, the same as B<-a>.
 
-=head2 PIDDLER_fifo
+=head2 PIDDLER_dont_fifo
 
-If set to 1, FIFOs will be shown, the same as B<-f>.
+If set to 1, FIFOs will not be shown, the same as B<-f>.
 
 =head2 PIDDLER_memreglib
 
@@ -266,9 +266,9 @@ shown, the same as B<-m>.
 If set to 1, libraries with the TXT type will be shown, the
 same as B<-t>.
 
-=head2 PIDDLER_pipe
+=head2 PIDDLER_dont_pipe
 
-If set to 1, pipes will be shown, the same as B<-p>.
+If set to 1, pipes will not be shown, the same as B<-p>.
 
 =head2 PIDDLER_dont_pipe_chains
 
@@ -278,10 +278,10 @@ If set to 1, pipe chains will not be shown, the same as B<-c>.
 
 If set to 1, unix sockets will not be shown, the same as B<-u>.
 
-=head2 PIDDLER_dont_unix_peers
+=head2 PIDDLER_dont_peers
 
-If set to 1, unix socket peers will not be resolved, the same
-as B<-U>.
+If set to 1, pipe, FIFO, and unix socket peers will not be
+resolved, the same as B<-E>.
 
 =head2 PIDDLER_vregroot
 
@@ -321,33 +321,37 @@ read/write instead, in which case the descriptor number is used, 0 being
 the input and 1 and 2 being the output. On those systems that means only
 pipes on stdin, stdout, and stderr may be chained together.
 
-=head1 UNIX SOCKET PEERS
+=head1 PIPE, FIFO, AND UNIX SOCKET PEERS
 
-The command holding the far end of a connected unix socket is appended
-to the socket in question, so B<-u> hides it along with the sockets
-themselves. B<-U> turns just this off.
+The command holding the far end of a pipe, FIFO, or unix socket is
+appended to the one in question, so B<-p>, B<-f>, and B<-u> decide
+whether it is seen at all. B<-E> turns just this off.
 
-    7u  unix 0xfffff80022630400 0 ->0xfffff80022635000 (dbus-daemon --session(51092))
-    14u unix 0xfffff80052dee800 0 /tmp/dbus-nWRW4XDDoD (xfce4-panel(63471))
+    7u  unix 0xfffff80022630400 0             ->0xfffff80022635000 (dbus-daemon --session(51092))
+    14u unix 0xfffff80052dee800 0             /tmp/dbus-nWRW4XDDoD (xfce4-panel(63471))
+    3r  FIFO 0,230              0t0 299839014 /tmp/testfifo (cat(12593))
 
-The far end is found either by way of the socket this one points at or
-by way of whatever points at this one, the latter being what covers the
-sockets lsof names after the path they are bound to, such as the
-accepted end of a connection.
+The far end is found either by way of the endpoint this one points at,
+by way of whatever points at this one, or by way of what else has the
+same one open. The second is what covers the unix sockets lsof names
+after the path they are bound to, such as the accepted end of a
+connection, and the third the FIFOs and, on Linux, pipes that both ends
+share a inode for.
 
-Commands longer than 40 characters are truncated. A socket whose far end
-can not be looked up, such as one held by another user's process when not
-running as root, is shown as a ?. Nothing is shown for a socket that is
-only bound and listening, as there is no one far end to it. A socket may
-be held by more than one process, such as after a fork, in which case all
-of them are listed.
+Commands longer than 40 characters are truncated. A endpoint whose far
+end can not be looked up, such as one held by another user's process when
+not running as root, is shown as a ?. Nothing is shown for one that has
+no far end to speak of, such as a unix socket that is only bound and
+listening or a FIFO no one else has open. A endpoint may be held by more
+than one process, such as after a fork, in which case all of them are
+listed.
 
-Tying the two ends of a socket together requires a system wide lsof,
-which is only done when a unix socket is actually going to be printed,
+Tying the two ends together requires a system wide lsof, which is only
+done when a pipe, FIFO, or unix socket is actually going to be printed,
 and only once no matter how many PIDs are given.
 
-Only systems whose lsof points at the far end of a socket, such as
-FreeBSD, are currently supported.
+Unix sockets are only tied together on systems whose lsof points at the
+far end of one, such as FreeBSD.
 
 =head1 FILE HANDLE DEDUPING
 
