@@ -532,7 +532,6 @@ sub run{
 	# them are, and a JID only for as long as the jail it names, so the
 	# caches do not outlive the run they were built for
 	$self->{all_files}=undef;
-	$self->{pipe_endpoints}=undef;
 	$self->{peer_pids}=undef;
 	$self->{jails}={};
 	$self->{containers}={};
