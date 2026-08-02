@@ -202,6 +202,16 @@ not running as root, is shown as a ?. Nothing is shown for one that has
 no far end to speak of, such as a unix socket that is only bound and
 listening or a FIFO no one else has open.
 
+The process itself is never named as the far end of its own entry. It is
+always one of the holders on systems that tie the two ends together via
+the node, as Linux does, and on the ones that hand each end a object of
+its own it comes up for the pipe or socket pair a process made for
+itself, where the two rows pointing at each other are the whole of what
+there is to say.
+
+    63u PIPE 0xfffffe016dcb5cc0 16384    ->0xfffffe016dcb5e18
+    64u PIPE 0xfffffe016dcb5e18 4096     ->0xfffffe016dcb5cc0
+
 A endpoint may be held by any number of other processes, such as a shared
 memory object inherited across a pile of forks, so the PIDs are gathered
 up under the command they are running, with B<peer_max> capping how many
@@ -302,8 +312,20 @@ and stderr a supervisor keeps of everything it started.
 
     galla --name mail(96264) <-> baphomet start(95432)
 
+A pipe a process made for itself never lands on a standard descriptor, so
+on FreeBSD the buffer sitting behind either end is what is left to tell
+the two apart. The read end is handed the one everything written to the
+pipe lands in, which starts out at 16k and is grown to 64k for one that is
+being pushed, against the 4k the write end is handed and never uses, so
+the larger of the two is the end being read from. Both are made at the
+smaller size when the kernel is low on room for them, in which case there
+is nothing to go on.
+
 A pipe with nothing on either side of it to go on is left out of the
-chains, as are both ends of one with descriptors going both ways.
+chains, as are both ends of one with descriptors going both ways. So is
+one with nothing on either end of it but the process itself, that being
+the same command printed twice and no more than the open files already
+say, which something like a browser holds a pile of.
 
 Defaults to 1, true.
 
@@ -1529,55 +1551,6 @@ sub _isFifo{
 }
 
 #
-# Turns a pipe entry from _lsof into a endpoint, which is a hash ref with
-# the keys pid, fd, id, peer_id, and direction. Undef is returned if the
-# entry can't be tied to the far end of the pipe.
-#
-sub _pipeEndpoint{
-	my $self=$_[0];
-	my $file=$_[1];
-
-	my $ids=$self->_peerIDs( $file );
-	if (
-		( !defined( $ids ) ) ||
-		( !defined( $ids->{peer_id} ) ) ||
-		( $file->{pid} =~ /^$/ )
-		){
-		return undef;
-	}
-	my $id=$ids->{id};
-	my $peer_id=$ids->{peer_id};
-
-	# The access characters are not printed for pipes on all systems, so
-	# the descriptor number is used as a fallback, 0 being the input and
-	# 1 and 2 being the output.
-	my $direction='';
-	if ( $file->{fd} =~ /w/ ){
-		$direction='w';
-	}elsif ( $file->{fd} =~ /r/ ){
-		$direction='r';
-	}elsif ( $file->{fd} =~ /^([0-9]+)/ ){
-		my $fd_number=$1;
-		if ( $fd_number == 0 ){
-			$direction='r';
-		}elsif (
-				( $fd_number == 1 ) ||
-				( $fd_number == 2 )
-				){
-			$direction='w';
-		}
-	}
-
-	return {
-			pid=>$file->{pid},
-			fd=>$file->{fd},
-			id=>$id,
-			peer_id=>$peer_id,
-			direction=>$direction,
-			};
-}
-
-#
 # Works out which way round a pipe entry from _lsof is pointed, returning
 # r, w, or a empty string for one that can not be told. The access
 # characters are not printed for pipes on all systems, so the descriptor
@@ -1621,6 +1594,7 @@ sub _pipeHolders{
 
 	my @pipes;
 	my %votes;
+	my %sizes;
 	foreach my $file ( @{ $self->_allFiles } ){
 		if ( ! $self->_isPipe( $file ) ){
 			next;
@@ -1638,6 +1612,12 @@ sub _pipeHolders{
 		my $direction=$self->_pipeDirection( $file );
 		if ( $direction !~ /^$/ ){
 			$votes{ $ids->{id} }{$direction}=1;
+		}
+
+		# kept for _pipeSizeDirection, which is what is left to tell the
+		# two ends of a pipe apart when nothing has a direction on it
+		if ( $file->{size} =~ /^[0-9]+$/ ){
+			$sizes{ $ids->{id} }=$file->{size};
 		}
 
 		push( @pipes, {
@@ -1676,13 +1656,22 @@ sub _pipeHolders{
 
 		# nothing to be had off of this end, so the far end says it instead
 		my $peer=$self->_pipeVote( \%votes, $peer_id );
-		if ( !defined( $peer ) ){
+		if ( defined( $peer ) ){
+			if ( $peer eq 'w' ){
+				$resolved{$id}='r';
+			}else{
+				$resolved{$id}='w';
+			}
 			next;
 		}
-		if ( $peer eq 'w' ){
-			$resolved{$id}='r';
-		}else{
-			$resolved{$id}='w';
+
+		# neither end is held on a descriptor there is anything to be read
+		# off of, which is every pipe a process made for itself rather than
+		# being handed one on its standard descriptors, leaving the buffer
+		# behind them as what tells the two apart
+		my $sized=$self->_pipeSizeDirection( \%sizes, $id, $peer_id );
+		if ( defined( $sized ) ){
+			$resolved{$id}=$sized;
 		}
 	}
 
@@ -1767,6 +1756,50 @@ sub _pipeVote{
 }
 
 #
+# Works out which way round a pipe end is from the size of the buffer
+# sitting behind it, returning r, w, or undef for a pair there is nothing
+# to go on with.
+#
+# FreeBSD hands the read end of a pipe the buffer everything written to it
+# lands in, which starts out at 16k and is grown to 64k for one that is
+# being pushed, and the write end a 4k one that is never used, so the
+# larger of the two is the end being read from. Both are made at the
+# smaller size when the kernel is low on room for them, which says
+# nothing, as does anything lsof reports no size for. This is the only
+# thing separating the two ends on the pipes a process made for itself
+# there, as those never land on a standard descriptor and lsof reports
+# every one of them as being open read/write.
+#
+# Other systems are left out of it, the sizes they hand the two ends of a
+# pipe being their own business rather than anything that follows from
+# how a pipe works.
+#
+sub _pipeSizeDirection{
+	my $self=$_[0];
+	my $sizes=$_[1];
+	my $id=$_[2];
+	my $peer_id=$_[3];
+
+	if ( $^O !~ /freebsd/ ){
+		return undef;
+	}
+
+	if (
+		( !defined( $sizes->{$id} ) ) ||
+		( !defined( $sizes->{$peer_id} ) ) ||
+		( $sizes->{$id} == $sizes->{$peer_id} )
+		){
+		return undef;
+	}
+
+	if ( $sizes->{$id} > $sizes->{$peer_id} ){
+		return 'r';
+	}
+
+	return 'w';
+}
+
+#
 # Splits the processes holding one end of a pipe into the ones it was made
 # for and the ones that only came by it through being forked off of
 # something already holding it, returning a hash ref with the keys own and
@@ -1814,30 +1847,24 @@ sub _pipeEnd{
 }
 
 #
-# Returns a hash ref of every pipe endpoint on the system, keyed by id,
-# so the far end of a pipe may be looked up by its peer_id. This requires
-# a system wide lsof, so the result is cached for the duration of the run.
+# Returns true if the PID is the only thing holding either end of the
+# pipe, which is what a process that made one for itself looks like.
 #
-sub _allPipeEndpoints{
+sub _pipeIsSelfOnly{
 	my $self=$_[0];
+	my $holders=$_[1];
+	my $key=$_[2];
+	my $pid=$_[3];
 
-	if ( defined( $self->{pipe_endpoints} ) ){
-		return $self->{pipe_endpoints};
-	}
-
-	my %endpoints;
-	foreach my $file ( @{ $self->_allFiles } ){
-		if ( $self->_isPipe( $file ) ){
-			my $endpoint=$self->_pipeEndpoint( $file );
-			if ( defined( $endpoint ) ){
-				push( @{ $endpoints{ $endpoint->{id} } }, $endpoint );
+	foreach my $direction ( 'w', 'r' ){
+		foreach my $holder_pid ( keys %{ $holders->{$key}{$direction} } ){
+			if ( $holder_pid ne $pid ){
+				return 0;
 			}
 		}
 	}
 
-	$self->{pipe_endpoints}=\%endpoints;
-
-	return $self->{pipe_endpoints};
+	return 1;
 }
 
 #
@@ -3303,11 +3330,27 @@ sub _peerCommands{
 
 	my @peer_pids;
 	my %seen;
-	# both ends share a ID on systems that tie them together via the node,
-	# where the process itself is always one of the holders, which says
-	# nothing worth printing
-	if ( defined( $ids->{peer_id} ) && ( $ids->{peer_id} eq $ids->{id} ) ){
-		$seen{ $file->{pid} }=1;
+	# The process itself is never worth printing as the far end of its own
+	# entry. It is always one of the holders on systems that tie the two
+	# ends together via the node, as Linux does, and on the ones that hand
+	# each end a object of its own it turns up for the pipe or socket pair
+	# a process made for itself, where the two rows pointing at each other
+	# are the whole of what there is to say.
+	$seen{ $file->{pid} }=1;
+
+	# A far end that was reached and turned out to be nothing but the
+	# process itself, which is what tells one from a far end that could not
+	# be reached at all once the process has been taken back out of it.
+	my $self_only=0;
+	if (
+		(
+		 ( defined( $ids->{peer_id} ) ) &&
+		 ( $ids->{peer_id} ne $ids->{id} ) &&
+		 ( defined( $peers->{holders}{ $ids->{peer_id} } ) )
+		 ) ||
+		( defined( $peers->{endpoints}{ $ids->{id} } ) )
+		){
+		$self_only=1;
 	}
 
 	# whatever holds the endpoint this one points at is on the far end
@@ -3347,6 +3390,13 @@ sub _peerCommands{
 	}
 
 	if ( !defined( $peer_pids[0] ) ){
+		# the far end was there to be had and is the process itself, so
+		# there is nothing to say of it rather than anything to be said
+		# about not getting at it
+		if ( $self_only ){
+			return undef;
+		}
+
 		# A endpoint lsof points somewhere with is known to have a far end,
 		# as is one held more than once, so say that it could not be
 		# reached. Anything else may just be a FIFO or socket nothing else
@@ -3533,11 +3583,18 @@ sub _pipeChains{
 			( defined( $holders->{$key}{w}{$pid} ) ) ||
 			( defined( $holders->{$key}{r}{$pid} ) )
 			){
-			push( @other_pipes, {
-								 type=>'pipe',
-								 writers=>$writers,
-								 readers=>$readers,
-								 } );
+			# A pipe a process made for itself, with nothing on either end of
+			# it but the process itself, says nothing here beyond the same
+			# command printed twice, and something like a browser holds a
+			# pile of them. It is already there in the open files as the two
+			# ends pointing at each other, so it is left to those.
+			if ( ! $self->_pipeIsSelfOnly( $holders, $key, $pid ) ){
+				push( @other_pipes, {
+									 type=>'pipe',
+									 writers=>$writers,
+									 readers=>$readers,
+									 } );
+			}
 		}
 	}
 
@@ -3739,7 +3796,8 @@ sub _pipeEndString{
 		return color( $self->{valColor} ).'?'.color('reset');
 	}
 
-	return join( color( $self->{valColor} ).', '.color('reset'), @parts );
+	# the space is kept out of the color as per _pipeChainTable
+	return join( color( $self->{valColor} ).','.color('reset').' ', @parts );
 }
 
 #
@@ -3755,9 +3813,13 @@ sub _pipeChainTable{
 	foreach my $item ( @{ $self->_pipeChains( $pid ) } ){
 		my $row;
 
+		# The spaces around the joiners are kept out of the color they are
+		# printed in, as a row wide enough to be wrapped has any space
+		# sitting right in front of a color code eaten, which runs the
+		# commands together with whatever is between them.
 		if ( $item->{type} eq 'pipe' ){
 			$row=$self->_pipeEndString( $item->{writers}, $pid, $commands ).
-			color( $self->{varColor} ).' | '.color('reset').
+			' '.color( $self->{varColor} ).'|'.color('reset').' '.
 			$self->_pipeEndString( $item->{readers}, $pid, $commands );
 		}else{
 			# a chain of just the process itself says nothing, which is what
@@ -3773,12 +3835,12 @@ sub _pipeChainTable{
 
 			# a channel is the one pipe apiece either way between two
 			# processes rather than a pipeline running through them
-			my $joiner=' | ';
+			my $joiner='|';
 			if ( $item->{type} eq 'channel' ){
-				$joiner=' <-> ';
+				$joiner='<->';
 			}
 
-			$row=join( color( $self->{varColor} ).$joiner.color('reset'), @parts );
+			$row=join( ' '.color( $self->{varColor} ).$joiner.color('reset').' ', @parts );
 		}
 
 		push( @rows, [ $row ] );
