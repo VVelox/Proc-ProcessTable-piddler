@@ -12,6 +12,7 @@ Display all process table, open files, and network connections for a PID.
 -d        Do not dedup.
 -e <int>  Max number of peers to show. 0 or less shows all. Default is 0.
 -f        Do not show FIFOs.
+-j        Show all the jail info for the jail the process is in.
 -m        Show memory mapped libraries of the REG type.
 -n        Do not resolve PTR addresses.
 --nc      Disable color.
@@ -39,6 +40,7 @@ toggle.
 | PIDDLER_dont_resolv | If set to 1, PTR addresses will not be resolved for network connections. |
 | PIDDLER_a_inode | If set to 1, a_inode types will be shown. |
 | PIDDLER_dont_fifo | If set to 1, FIFOs will not be shown. |
+| PIDDLER_jail_info | If set to 1, all the jail info will be shown for the jail a process is in. |
 | PIDDLER_memreglib | If set to 1, memory mapped libraries with the type REG will be shown. |
 | PIDDLER_dont_pipe | If set to 1, pipes will not be shown. |
 | PIDDLER_dont_pipe_chains | If set to 1, pipe chains will not be shown. |

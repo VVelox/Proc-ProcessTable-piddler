@@ -9,6 +9,7 @@ use Term::ANSIColor;
 use Proc::ProcessTable::InfoString;
 use Sys::MemInfo qw(totalmem);
 use Net::Connection::ncnetstat;
+use JSON;
 
 =head1 NAME
 
@@ -119,6 +120,22 @@ Only the SIZE/OFF values that are a size are touched, a offset being a
 position rather than a amount.
 
 Defaults to 1, true.
+
+=head4 jail_info
+
+Print every parameter of the jail the process is in under its own
+section, as per L</JAILS>.
+
+    JAIL ARG      VALUE
+    host.hostname test.example.org
+    jid           1
+    name          test
+    path          /jails/test
+    persist       true
+
+Nothing is printed for a process that is not in a jail.
+
+Defaults to 0, false.
 
 =head4 memreglib
 
@@ -310,6 +327,7 @@ sub new{
 				dont_resolv=>0,
 				fifo=>1,
 				a_inode=>0,
+				jail_info=>0,
 				memreglib=>0,
 				pipe_chains=>1,
 				peers=>1,
@@ -324,7 +342,7 @@ sub new{
 	my @arg_feed=(
 				  'txt', 'pipe', 'unix', 'vregroot', 'dont_dedup', 'dont_resolv',
 				  'fifo', 'a_inode', 'memreglib', 'pipe_chains', 'peers',
-				  'human_size', 'peer_max'
+				  'human_size', 'peer_max', 'jail_info'
 				   );
 
 	foreach my $feed ( @arg_feed ){
@@ -417,10 +435,12 @@ sub run{
 	}
 
 	# the endpoints are only good for as long as the processes holding
-	# them are, so the caches do not outlive the run they were built for
+	# them are, and a JID only for as long as the jail it names, so the
+	# caches do not outlive the run they were built for
 	$self->{all_files}=undef;
 	$self->{pipe_endpoints}=undef;
 	$self->{peer_pids}=undef;
+	$self->{jails}={};
 
 	# what the PIDs in a pipe chain or on the far end of a endpoint get
 	# printed as
@@ -647,6 +667,10 @@ sub run{
 
 				if ( $key =~ /^start$/ ){
 					$value=$self->startString( $proc->{start} );
+				}
+
+				if ( $key =~ /^jid$/ ){
+					$value=$self->_jailString( $proc->{jid} );
 				}
 
 				if ( !defined( $value ) ){
@@ -1010,6 +1034,14 @@ sub run{
 		}
 
 		#
+		# handle the jail info
+		#
+		my $jail_info='';
+		if ( $self->{jail_info} ){
+			$jail_info=$self->_jailTable( $proc->{jid} );
+		}
+
+		#
 		# adds the new item
 		#
 		$tb->add_rows( \@data );
@@ -1018,7 +1050,7 @@ sub run{
 		}else{
 			$toReturn=$toReturn."\n\n";
 		}
-		$toReturn=$toReturn.$tb->draw.$open_files.$netstat.$pipe_chains;
+		$toReturn=$toReturn.$tb->draw.$open_files.$netstat.$pipe_chains.$jail_info;
 	}
 
 	return $toReturn;
@@ -1350,6 +1382,178 @@ sub _groupString{
 	color( $self->{idColors}[2] ).$gid.
 	color( $self->{idColors}[1] ).')'
 	.color('reset');
+}
+
+#
+# Returns a hash ref of the parameters jls reports for a JID, which is
+# cached for the duration of the run as any number of processes may be
+# in the same jail. Undef is returned for the host, anything that is not
+# FreeBSD, and any jail that could not be looked up.
+#
+sub _jailInfo{
+	my $self=$_[0];
+	my $jid=$_[1];
+
+	if (
+		( $^O !~ /freebsd/ ) ||
+		( !defined( $jid ) ) ||
+		( $jid !~ /^[0-9]+$/ ) ||
+		( $jid == 0 )
+		){
+		return undef;
+	}
+
+	if ( exists( $self->{jails}{$jid} ) ){
+		return $self->{jails}{$jid};
+	}
+	# noted as looked up either way, so a jail that is not there is not
+	# asked after over and over
+	$self->{jails}{$jid}=undef;
+
+	# -n is what gets every parameter of the jail printed, jls otherwise
+	# only reporting the handful of columns it has. It also has a habit of
+	# printing a error for a jail that is not there, on top of the empty
+	# list it hands back for one, so stderr is sent off to be forgotten
+	# about.
+	my $output_raw=`jls --libxo json -n -j $jid 2> /dev/null`;
+
+	my $decoded;
+	eval{
+		$decoded=decode_json( $output_raw );
+	};
+	if (
+		( !defined( $decoded ) ) ||
+		( ref( $decoded ) ne 'HASH' ) ||
+		( ref( $decoded->{'jail-information'} ) ne 'HASH' ) ||
+		( ref( $decoded->{'jail-information'}{jail} ) ne 'ARRAY' ) ||
+		( ref( $decoded->{'jail-information'}{jail}[0] ) ne 'HASH' )
+		){
+		return undef;
+	}
+
+	$self->{jails}{$jid}=$decoded->{'jail-information'}{jail}[0];
+
+	return $self->{jails}{$jid};
+}
+
+#
+# Renders a JID as the name of the jail with the number after it, in the
+# same manner as _userString, with the hostname and path tacked on when
+# they have anything to add. Just the number is used for the host and for
+# any jail that can't be looked up.
+#
+sub _jailString{
+	my $self=$_[0];
+	my $jid=$_[1];
+
+	my $jail=$self->_jailInfo( $jid );
+
+	if (
+		( !defined( $jail ) ) ||
+		( !defined( $jail->{name} ) ) ||
+		( $jail->{name} =~ /^$/ )
+		){
+		return color( $self->{valColor} ).$jid.color('reset');
+	}
+
+	my $toReturn=color( $self->{idColors}[0] ).$jail->{name}.
+	color( $self->{idColors}[1] ).'('.
+	color( $self->{idColors}[2] ).$jid.
+	color( $self->{idColors}[1] ).')'
+	.color('reset');
+
+	# the hostname is more often than not just the name over again and the
+	# path nothing worth mentioning for a jail sharing the file system it
+	# was started from
+	if (
+		( defined( $jail->{'host.hostname'} ) ) &&
+		( $jail->{'host.hostname'} !~ /^$/ ) &&
+		( $jail->{'host.hostname'} ne $jail->{name} )
+		){
+		$toReturn=$toReturn.' '.color( $self->{valColor} ).$jail->{'host.hostname'}.color('reset');
+	}
+
+	if (
+		( defined( $jail->{path} ) ) &&
+		( $jail->{path} !~ /^$/ ) &&
+		( $jail->{path} ne '/' )
+		){
+		$toReturn=$toReturn.' '.color( $self->{valColor} ).$jail->{path}.color('reset');
+	}
+
+	return $toReturn;
+}
+
+#
+# Renders a value jls reports for a jail parameter, the JSON it is taken
+# from having booleans and lists in it on top of the plain scalars.
+#
+sub _jailValue{
+	my $self=$_[0];
+	my $value=$_[1];
+
+	if ( !defined( $value ) ){
+		return '';
+	}
+
+	if ( ref( $value ) eq 'ARRAY' ){
+		my @values;
+		foreach my $item ( @{ $value } ){
+			push( @values, $self->_jailValue( $item ) );
+		}
+		return join( ', ', @values );
+	}
+
+	# a JSON boolean stringifies as 1 or 0, which says less than it could
+	# for something like persist or dying
+	if ( ref( $value ) =~ /Boolean$/ ){
+		if ( $value ){
+			return 'true';
+		}
+		return 'false';
+	}
+
+	return $value;
+}
+
+#
+# Builds the table of every parameter jls reports for the jail a PID is
+# in, returning a empty string for a process that is not in one.
+#
+sub _jailTable{
+	my $self=$_[0];
+	my $jid=$_[1];
+
+	my $jail=$self->_jailInfo( $jid );
+	if ( !defined( $jail ) ){
+		return '';
+	}
+
+	my @rows;
+	foreach my $key ( sort keys %{ $jail } ){
+		push( @rows, [
+					  color( $self->{varColor} ).$key.color('reset'),
+					  color( $self->{valColor} ).$self->_jailValue( $jail->{$key} ).color('reset'),
+					  ]);
+	}
+
+	if ( !defined( $rows[0] ) ){
+		return '';
+	}
+
+	my $jtb = Text::ANSITable->new;
+	$jtb->border_style('Default::none_ascii');
+	$jtb->color_theme('Default::no_color');
+	$jtb->show_header(1);
+	$jtb->set_column_style(0, pad => 0);
+	$jtb->set_column_style(1, pad => 1);
+	$jtb->columns([
+				   color( $self->{varColor} ).'JAIL ARG'.color('reset'),
+				   color( $self->{varColor} ).'VALUE'.color('reset')
+				   ]);
+	$jtb->add_rows( \@rows );
+
+	return $jtb->draw;
 }
 
 #
@@ -2012,6 +2216,33 @@ sub nextColor{
 
 	return $color;
 }
+
+=head1 JAILS
+
+On FreeBSD, any process with a JID other than 0 has the jail it is in
+looked up, showing the name of it with the number after it in the same
+manner as the UID and GID.
+
+    jid  test(1) test.example.org /jails/test
+
+The hostname and path are only tacked on when they have anything to add,
+the first being more often than not just the name over again and the
+second nothing worth mentioning for a jail sharing the file system it was
+started from. Just the number is shown for a jail that can not be looked
+up, such as one that has gone away since the process table was read.
+
+B<jail_info> adds a section with every parameter of the jail in it,
+which is the lot of what jls reports for one.
+
+    JAIL ARG      VALUE
+    host.hostname test.example.org
+    jid           1
+    name          test
+    path          /jails/test
+    persist       true
+
+The lookup takes a run of jls, which is only done for a process that is
+in a jail, and only once per jail no matter how many PIDs are given.
 
 =head1 AUTHOR
 

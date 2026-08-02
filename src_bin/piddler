@@ -22,6 +22,7 @@ sub help{
 -d        Do not dedup.
 -e <int>  Max number of peers to show. 0 or less shows all. Default is 0.
 -f        Do not show FIFOs.
+-j        Show all the jail info for the jail the process is in.
 -m        Show memory mapped libraries of the REG type.
 -n        Do not resolve PTR addresses.
 --nc      Disable color.
@@ -50,6 +51,7 @@ my $memreglib=0;
 my $dont_pipe_chains=0;
 my $dont_peers=0;
 my $dont_human_size=0;
+my $jail_info=0;
 # left undefined so the environmental variable may be told apart from the flag
 my $peer_max;
 
@@ -75,6 +77,7 @@ GetOptions(
 		   'a' => \$a_inode,
 		   'm' => \$memreglib,
 		   'c' => \$dont_pipe_chains,
+		   'j' => \$jail_info,
 		   );
 
 # print the version info if requested
@@ -146,6 +149,10 @@ if ( defined( $ENV{PIDDLER_dont_peers} ) ){
 if ( defined( $ENV{PIDDLER_dont_human_size} ) ){
 	$dont_human_size = $dont_human_size ^ ( $ENV{PIDDLER_dont_human_size} ? 1 : 0 );
 }
+# XOR the -j if needed
+if ( defined( $ENV{PIDDLER_jail_info} ) ){
+	$jail_info = $jail_info ^ ( $ENV{PIDDLER_jail_info} ? 1 : 0 );
+}
 # XOR the -n if needed
 if ( defined( $ENV{PIDDLER_dont_resolv} ) ){
 	$dont_resolv = $dont_resolv ^ ( $ENV{PIDDLER_dont_resolv} ? 1 : 0 );
@@ -192,6 +199,7 @@ my $ppp=Proc::ProcessTable::piddler->new(
 										  pipe_chains=>( $dont_pipe_chains ? 0 : 1 ),
 										  peers=>( $dont_peers ? 0 : 1 ),
 										  peer_max=>$peer_max,
+										  jail_info=>$jail_info,
 										  human_size=>( $dont_human_size ? 0 : 1 ),
 										  }
 										 );
@@ -205,7 +213,7 @@ piddler - Display all process table, open files, and network connections for a P
 
 =head1 SYNOPSIS
 
-piddler [B<-a>] [B<-c>] [B<-d>] [B<-e> <int>] [B<-f>] [B<-m>] [B<-n>] [B<--nc>] [B<-p>] [B<-r>] [B<-t>] [B<-u>] [B<-E>] [B<-H>] <PID>[,<PID>...]
+piddler [B<-a>] [B<-c>] [B<-d>] [B<-e> <int>] [B<-f>] [B<-j>] [B<-m>] [B<-n>] [B<--nc>] [B<-p>] [B<-r>] [B<-t>] [B<-u>] [B<-E>] [B<-H>] <PID>[,<PID>...]
 
 piddler [B<-h>|B<--help>]
 
@@ -238,6 +246,10 @@ Defaults to 0, showing all of them.
 =head2 -f
 
 Do not show FIFOs.
+
+=head2 -j
+
+Show all the jail info for the jail the process is in, as per L</JAILS>.
 
 =head2 -m
 
@@ -297,6 +309,11 @@ If set to 1, a_inode types will be shown, the same as B<-a>.
 =head2 PIDDLER_dont_fifo
 
 If set to 1, FIFOs will not be shown, the same as B<-f>.
+
+=head2 PIDDLER_jail_info
+
+If set to 1, all the jail info will be shown for the jail a
+process is in, the same as B<-j>.
 
 =head2 PIDDLER_memreglib
 
@@ -409,6 +426,33 @@ going to be printed, and only once no matter how many PIDs are given.
 
 Unix sockets are only tied together on systems whose lsof points at the
 far end of one, such as FreeBSD.
+
+=head1 JAILS
+
+On FreeBSD, any process with a JID other than 0 has the jail it is in
+looked up, showing the name of it with the number after it in the same
+manner as the UID and GID.
+
+    jid  test(1) test.example.org /jails/test
+
+The hostname and path are only tacked on when they have anything to add,
+the first being more often than not just the name over again and the
+second nothing worth mentioning for a jail sharing the file system it was
+started from. Just the number is shown for a jail that can not be looked
+up, such as one that has gone away since the process table was read.
+
+B<-j> adds a section with every parameter of the jail in it, which is the
+lot of what jls reports for one.
+
+    JAIL ARG      VALUE
+    host.hostname test.example.org
+    jid           1
+    name          test
+    path          /jails/test
+    persist       true
+
+The lookup takes a run of jls, which is only done for a process that is
+in a jail, and only once per jail no matter how many PIDs are given.
 
 =head1 FILE HANDLE DEDUPING
 

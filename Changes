@@ -7,6 +7,7 @@ Revision history for Proc-ProcessTable-piddler
         - Humanize open file sizes.
         - Roll up alike SHM when deduping.
         - Show total SHM with the process info.
+        - Show the jail a process is in on FreeBSD.
         - Unwrap 32 bit wrapped RSS and VSZ.
         - Show EUID and EGID when reported.
         - Parse lsof field output, so DEVICE is
