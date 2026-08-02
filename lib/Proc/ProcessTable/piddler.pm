@@ -87,10 +87,11 @@ The modes below are all also RW and considered that.
     ur
     uw
 
-Shared memory objects are rolled up as well. A process may hold a great
-many that print the same, anonymous ones having nothing to tell them
-apart but their size and what else holds them, so only the first of them
-is printed, with the number left off tacked onto the FD.
+Shared memory objects are rolled up as well, as per L</SHARED MEMORY>. A
+process may hold a great many that print the same, anonymous ones having
+nothing to tell them apart but their size and what else holds them, so
+only the first of them is printed, with the number left off tacked onto
+the FD.
 
     40u+43 SHM  262.144k
 
@@ -104,7 +105,8 @@ Defaults to 0, false.
 
 =head4 fifo
 
-Print FIFOs.
+Print named pipes, which is to say the FIFOs sitting on the file system
+rather than the anonymous pipes B<pipe> covers.
 
 Defaults to 1, true.
 
@@ -123,8 +125,9 @@ Defaults to 1, true.
 
 =head4 jail_info
 
-Print every parameter of the jail the process is in under its own
-section, as per L</JAILS>.
+Print what the process has been shut away in under its own section, that
+being every parameter of the jail it is in on FreeBSD, as per L</JAILS>,
+and the cgroups and namespaces it is in on Linux, as per L</CONTAINERS>.
 
     JAIL ARG      VALUE
     host.hostname test.example.org
@@ -133,7 +136,14 @@ section, as per L</JAILS>.
     path          /jails/test
     persist       true
 
-Nothing is printed for a process that is not in a jail.
+    CONTAINER ARG VALUE
+    cgroup        /system.slice/lldpd.service
+    ns:ipc        4026531839
+    ns:mnt        4026532643 private
+    ns:net        4026531833
+
+Nothing is printed for a process that is not in a jail, the cgroups and
+namespaces being there to print either way.
 
 Defaults to 0, false.
 
@@ -201,14 +211,21 @@ Tying the two ends together requires a system wide lsof, so it is only
 run when a pipe, FIFO, unix socket, or shared memory object is actually
 going to be printed, and only once per call to run.
 
-Unix sockets are only tied together on systems whose lsof points at the
-far end of one, such as FreeBSD.
+Unix sockets are tied together either by way of a lsof that points at the
+far end of one, as FreeBSD does, or by way of B<lsof +E>, which is what is
+used on Linux. A build of lsof with no B<+E> to it just leaves them
+without a far end to speak of, everything else carrying on as it was.
 
 Defaults to 1, true.
 
 =head4 pipe
 
-Print pipes.
+Print anonymous pipes, the sort a shell makes when it strings two
+commands together.
+
+Linux hands these the FIFO type rather than one of their own, naming them
+pipe instead of after a path the way a named one is, which is what tells
+the two apart there.
 
 Defaults to 1, true.
 
@@ -237,7 +254,28 @@ the order the data flows through them, oldest to newest.
 Commands are truncated as per B<pipe_chain_command_length>. Any process
 that can not be looked up, such as one belonging to another user when not
 running as root, is shown as a ?. A process may sit on more than one
-pipe, so at most 16 chains are shown for any one of them.
+pipe, so at most 16 lines are shown for any one of them.
+
+Only a pipe with the one process writing and the one reading is a link in
+a pipeline, that being what a shell makes when it strings two commands
+together. Two processes each running a pipe at the other are talking both
+ways, which is the one channel between them rather than two pipelines
+pointed opposite ways.
+
+    firefox(7375) <-> firefox -contentproc...(24844)
+
+Anything else is left as the one pipe it is, printed as whatever is
+writing to it against whatever is reading, rather than being strung into
+a pipeline it is not. A worker pool sharing a queue out among its workers
+is the usual sort.
+
+    python process.py(8007) | python process.py(8007), inherited(94645, 94646, + 5 more)
+
+A process forked off of one already holding a pipe is handed a copy of it
+whether it has any use for it or not, and a pool that forks a worker at a
+time ends up with every worker holding a end of every pipe made before
+it. Those are printed as B<inherited> so they are not taken for something
+that was given the pipe to use.
 
 Tying the two ends of a pipe together requires a system wide lsof, so it
 is only run for processes that actually have a pipe open, and only once
@@ -457,13 +495,22 @@ sub run{
 	$self->{pipe_endpoints}=undef;
 	$self->{peer_pids}=undef;
 	$self->{jails}={};
+	$self->{containers}={};
+	$self->{host_namespaces}=undef;
+	$self->{cgroup_files}={};
+	$self->{ppids}={};
+	$self->{pipe_holders}=undef;
+	# undef is what says there is no v2 hierarchy, so this one is cleared
+	# out rather than set
+	delete( $self->{cgroup_mount} );
 
 	# what the PIDs in a pipe chain or on the far end of a endpoint get
 	# printed as
 	my %commands;
 	if (
 		( $self->{pipe_chains} ) ||
-		( $self->{peers} )
+		( $self->{peers} ) ||
+		( $self->{jail_info} )
 		){
 		foreach my $current_proc ( @{ $pt } ){
 			my $command;
@@ -482,6 +529,12 @@ sub run{
 				$command=~s/^\s+//;
 				$command=~s/\s+$//;
 				$commands{ $current_proc->pid }=$command;
+			}
+
+			# what says whether a process was handed a pipe by way of being
+			# forked off of something already holding it
+			if ( defined( $current_proc->{ppid} ) ){
+				$self->{ppids}{ $current_proc->pid }=$current_proc->{ppid};
 			}
 		}
 	}
@@ -703,6 +756,59 @@ sub run{
 		}
 
 		#
+		# what a Linux process has been shut away in, which is what stands
+		# in for the JID the process table hands over on FreeBSD
+		#
+		my $cgroup_string=$self->_cgroupString( $proc->pid );
+		if ( defined( $cgroup_string ) ){
+			push( @data, [
+						  color( $self->{varColor} ).'Cgroup'.color('reset'),
+						  $cgroup_string
+						  ]);
+		}
+
+		my $container_string=$self->_containerString( $proc->pid );
+		if ( defined( $container_string ) ){
+			push( @data, [
+						  color( $self->{varColor} ).'Container'.color('reset'),
+						  $container_string
+						  ]);
+		}
+
+		my $namespace_string=$self->_namespaceString( $proc->pid );
+		if ( defined( $namespace_string ) ){
+			push( @data, [
+						  color( $self->{varColor} ).'Namespaces'.color('reset'),
+						  $namespace_string
+						  ]);
+		}
+
+		#
+		# what the cgroup is using of what it is allowed. All of it covers
+		# the whole cgroup rather than the one process, and each is left off
+		# when it has nothing to say, be it a limit that was never set or a
+		# controller that was never turned on.
+		#
+		my $cgroup_dir=$self->_cgroupDir( $proc->pid );
+		if ( defined( $cgroup_dir ) ){
+			my @cgroup_rows=(
+							 [ 'Cgroup mem', $self->_cgroupMemoryString( $cgroup_dir ) ],
+							 [ 'Cgroup cpu', $self->_cgroupCpuString( $cgroup_dir ) ],
+							 [ 'Cgroup pids', $self->_cgroupPidsString( $cgroup_dir ) ],
+							 [ 'Cgroup events', $self->_cgroupEventsString( $cgroup_dir ) ],
+							 [ 'Cgroup pressure', $self->_cgroupPressureString( $cgroup_dir ) ],
+							 );
+			foreach my $cgroup_row ( @cgroup_rows ){
+				if ( defined( $cgroup_row->[1] ) ){
+					push( @data, [
+								  color( $self->{varColor} ).$cgroup_row->[0].color('reset'),
+								  $cgroup_row->[1]
+								  ]);
+				}
+			}
+		}
+
+		#
 		# cmndline
 		#
 		if (
@@ -761,7 +867,7 @@ sub run{
 				# noted so the pipe chains may be skipped entirely, and
 				# the system wide lsof they require avoided, for any
 				# process that does not have a pipe open
-				if ( $self->_isPipe( $type ) ){
+				if ( $self->_isPipe( $file ) ){
 					$has_pipes=1;
 				}
 
@@ -777,17 +883,17 @@ sub run{
 					 ) ||
 					# pipe... spammy... only print if asked
 					(
-					 ( $type =~ /^[Pp][Ii][Pp][Ee]$/ ) &&
+					 ( $self->_isPipeAnon( $file ) ) &&
 					 ( ! $self->{pipe} )
 					 ) ||
 					# unix... spammy... only print if asked
 					(
-					 ( $type =~ /^[Uu][Nn][Ii][Xx]$/ ) &&
+					 ( $self->_isUnix( $file ) ) &&
 					 ( ! $self->{unix} )
 					 ) ||
 					# fifo... spammy with elasticsearch and the like... only print if asked...
 					(
-					 ( $type =~ /^[Ff][Ii][Ff][Oo]$/ ) &&
+					 ( $self->_isFifo( $file ) ) &&
 					 ( ! $self->{fifo} )
 					 ) ||
 					# memory mapped libraries with REG type....
@@ -829,9 +935,9 @@ sub run{
 					( ! $dont_add ) &&
 					( $self->{peers} ) &&
 					(
-					 ( $self->_isUnix( $type ) ) ||
-					 ( $self->_isPipe( $type ) ) ||
-					 ( $self->_isShm( $type ) )
+					 ( $self->_isUnix( $file ) ) ||
+					 ( $self->_isPipe( $file ) ) ||
+					 ( $self->_isShm( $file ) )
 					 )
 					){
 					my $peer=$self->_peerCommands( $file, \%commands );
@@ -848,11 +954,27 @@ sub run{
 
 				my $size_string=$self->_sizeString( $file );
 
+				# noted here as the deduping is finalized from the rendered
+				# rows, which have no type left on them beyond what is printed,
+				# and a shared memory object is a REG like any other on Linux
+				my $is_shm=$self->_isShm( $file );
+
 				if (
 					( ! $self->{dont_dedup} ) &&
 					( ! $dont_add )
 					){
-					if (
+					if ( $is_shm ){
+						# a process may hold a pile of shared memory objects
+						# that all print the same, anonymous ones having
+						# nothing to tell them apart but their size and what
+						# else holds them, which are worth a single line and
+						# a count of the rest
+						if (! defined( $shm_alike{ $size_string."\0".$name } ) ) {
+							$shm_alike{ $size_string."\0".$name } = 1;
+						} else {
+							$shm_alike{ $size_string."\0".$name }++;
+						}
+					}elsif (
 						( $type =~ /[Vv][Rr][Ee][Gg]/ ) ||
 						( $type =~ /[Rr][Ee][Gg]/ ) ||
 						( $type =~ /[Vv][Dd][Ii][Dd]/ ) ||
@@ -887,17 +1009,6 @@ sub run{
 								$mem_filehandles{ $name }++;
 							}
 						}
-					}elsif ( $self->_isShm( $type ) ){
-						# a process may hold a pile of shared memory objects
-						# that all print the same, anonymous ones having
-						# nothing to tell them apart but their size and what
-						# else holds them, which are worth a single line and
-						# a count of the rest
-						if (! defined( $shm_alike{ $size_string."\0".$name } ) ) {
-							$shm_alike{ $size_string."\0".$name } = 1;
-						} else {
-							$shm_alike{ $size_string."\0".$name }++;
-						}
 					}
 				}
 
@@ -909,6 +1020,7 @@ sub run{
 								   $size_string,
 								   color( $self->{file_colors}[4] ).$node.color( 'reset' ),
 								   $name,
+								   $is_shm,
 								   ]);
 				}
 			}
@@ -922,7 +1034,19 @@ sub run{
 				my %mem_dedup;
 				my %shm_dedup;
 				foreach my $line ( @fdata ){
-					if (
+					if ( $line->[6] ){
+						# the ones that print the same are rolled up into the
+						# first of them, with the number left off tacked onto
+						# the FD in the same manner as a duplicate handle
+						my $key=$line->[3]."\0".$line->[5];
+						if ( !defined( $shm_dedup{$key} ) ){
+							$shm_dedup{$key}=1;
+							if ( $shm_alike{$key} > 1 ){
+								$line->[0]=$line->[0].'+'.( $shm_alike{$key} - 1 );
+							}
+							push( @final_fdata, [ @{ $line }[ 0 .. 5 ] ] );
+						}
+					}elsif (
 						( $line->[1] =~ /[Vv][Rr][Ee][Gg]/ ) ||
 						( $line->[1] =~ /[Rr][Ee][Gg]/ ) ||
 						( $line->[1] =~ /[Vv][Dd][Ii][Dd]/ ) ||
@@ -972,34 +1096,20 @@ sub run{
 						}
 
 						if ( $add_line ){
-							push( @final_fdata, [
-												 $line->[0],
-												 $line->[1],
-												 $line->[2],
-												 $line->[3],
-												 $line->[4],
-												 $line->[5],
-												 ]);
-						}
-					}elsif ( $line->[1] =~ /[Ss][Hh][Mm]/ ){
-						# the ones that print the same are rolled up into the
-						# first of them, with the number left off tacked onto
-						# the FD in the same manner as a duplicate handle
-						my $key=$line->[3]."\0".$line->[5];
-						if ( !defined( $shm_dedup{$key} ) ){
-							$shm_dedup{$key}=1;
-							if ( $shm_alike{$key} > 1 ){
-								$line->[0]=$line->[0].'+'.( $shm_alike{$key} - 1 );
-							}
-							push( @final_fdata, \@{ $line } );
+							push( @final_fdata, [ @{ $line }[ 0 .. 5 ] ] );
 						}
 					}else{
-						push( @final_fdata, \@{ $line } );
+						push( @final_fdata, [ @{ $line }[ 0 .. 5 ] ] );
 					}
 				}
 				$ftb->add_rows( \@final_fdata );
 			}else{
-				$ftb->add_rows( \@fdata );
+				# the shared memory marker is only ever of use to the deduping,
+				# so it is never handed to the table
+				foreach my $line ( @fdata ){
+					push( @final_fdata, [ @{ $line }[ 0 .. 5 ] ] );
+				}
+				$ftb->add_rows( \@final_fdata );
 			}
 
 
@@ -1050,11 +1160,14 @@ sub run{
 		}
 
 		#
-		# handle the jail info
+		# handle the jail info, which on Linux is the cgroups and
+		# namespaces standing in for it. Each of the two only has anything
+		# to say on the system it belongs to, so there is no need to ask
+		# which one this is.
 		#
 		my $jail_info='';
 		if ( $self->{jail_info} ){
-			$jail_info=$self->_jailTable( $proc->{jid} );
+			$jail_info=$self->_jailTable( $proc->{jid} ).$self->_containerTable( $proc->pid, \%commands );
 		}
 
 		#
@@ -1225,7 +1338,27 @@ sub _allFiles{
 		return $self->{all_files};
 	}
 
-	my $files=$self->_lsof;
+	# Linux does not point a unix socket at the far end of itself the way
+	# FreeBSD does, leaving lsof +E as what ties the two together there. It
+	# tacks the endpoints onto the name rather than handing back anything
+	# more to work with, which is picked apart by _lsofEndpointPIDs, and
+	# costs next to nothing on top of the lsof that is being run either
+	# way. Not every build of lsof has it, so a failed run falls back to
+	# going without.
+	# lsof exits non-zero for a option it does not have, which on Linux is
+	# the same exit it uses for a file it could not get at and so is let
+	# by, leaving a run that came back with nothing at all as what says it
+	# has no +E to it.
+	my $files;
+	if ( $^O =~ /linux/ ){
+		$files=$self->_lsof( '+E' );
+	}
+	if (
+		( !defined( $files ) ) ||
+		( !defined( $files->[0] ) )
+		){
+		$files=$self->_lsof;
+	}
 	if ( !defined( $files ) ){
 		$files=[];
 	}
@@ -1236,15 +1369,122 @@ sub _allFiles{
 }
 
 #
-# Returns true if the lsof type passed to it is a pipe of some sort.
+# Picks the PIDs holding the far end of a file from _lsof out of the name
+# lsof +E tacked them onto, returning a array ref of them. Each is printed
+# as the PID, command, and FD run together with commas, trailing either a
+# ->INO= pointing at the far end of a unix socket or the name of a pipe.
+# The command is cut down to a handful of characters, so only the PID is
+# taken, the full one being had from the process table.
+#
+sub _lsofEndpointPIDs{
+	my $self=$_[0];
+	my $file=$_[1];
+
+	my @pids;
+	my %seen;
+	foreach my $field ( split( /[\ \t]+/, $file->{name} ) ){
+		# both a PID at the front and a FD at the back are wanted, as that
+		# is a good deal more than any part of a path is going to look like
+		if ( $field !~ /^([0-9]+),.*,[0-9]+[a-zA-Z]*$/ ){
+			next;
+		}
+		my $pid=$1;
+
+		# a process may hold the far end on more than one FD, which is
+		# worth mentioning no more than once
+		if ( defined( $seen{$pid} ) ){
+			next;
+		}
+		$seen{$pid}=1;
+
+		push( @pids, $pid );
+	}
+
+	return \@pids;
+}
+
+#
+# Returns true if lsof said the file from _lsof has a far end to it, which
+# is what tells a unix socket that is only bound and listening from one
+# that is connected to something out of reach.
+#
+sub _lsofHasEndpoint{
+	my $self=$_[0];
+	my $file=$_[1];
+
+	if ( $file->{name} =~ /\-\>INO=/ ){
+		return 1;
+	}
+
+	return 0;
+}
+
+#
+# Returns true if the file from _lsof is a pipe of some sort, be it a
+# anonymous one or a named one.
 #
 sub _isPipe{
 	my $self=$_[0];
-	my $type=$_[1];
+	my $file=$_[1];
+
+	if ( !defined( $file ) ){
+		return 0;
+	}
 
 	if (
-		( $type =~ /^[Pp][Ii][Pp][Ee]$/ ) ||
-		( $type =~ /^[Ff][Ii][Ff][Oo]$/ )
+		( $file->{type} =~ /^[Pp][Ii][Pp][Ee]$/ ) ||
+		( $file->{type} =~ /^[Ff][Ii][Ff][Oo]$/ )
+		){
+		return 1;
+	}
+
+	return 0;
+}
+
+#
+# Returns true if the file from _lsof is a anonymous pipe, the sort made
+# by a shell stringing two commands together.
+#
+sub _isPipeAnon{
+	my $self=$_[0];
+	my $file=$_[1];
+
+	if ( !defined( $file ) ){
+		return 0;
+	}
+
+	if ( $file->{type} =~ /^[Pp][Ii][Pp][Ee]$/ ){
+		return 1;
+	}
+
+	# Linux hands a anonymous pipe the FIFO type rather than one of its
+	# own, naming it pipe instead of after the path a named one lives at,
+	# which is the only thing telling the two apart there.
+	if (
+		( $file->{type} =~ /^[Ff][Ii][Ff][Oo]$/ ) &&
+		( $file->{match_name} !~ /^\// )
+		){
+		return 1;
+	}
+
+	return 0;
+}
+
+#
+# Returns true if the file from _lsof is a named pipe, which is to say a
+# FIFO sitting on the file system rather than a anonymous one.
+#
+sub _isFifo{
+	my $self=$_[0];
+	my $file=$_[1];
+
+	if ( !defined( $file ) ){
+		return 0;
+	}
+
+	if (
+		( $file->{type} =~ /^[Ff][Ii][Ff][Oo]$/ ) &&
+		( ! $self->_isPipeAnon( $file ) )
 		){
 		return 1;
 	}
@@ -1302,6 +1542,122 @@ sub _pipeEndpoint{
 }
 
 #
+# Works out which way round a pipe entry from _lsof is pointed, returning
+# r, w, or a empty string for one that can not be told. The access
+# characters are not printed for pipes on all systems, so the descriptor
+# number is used as a fallback, 0 being the input and 1 and 2 the output.
+#
+sub _pipeDirection{
+	my $self=$_[0];
+	my $file=$_[1];
+
+	if ( $file->{fd} =~ /w/ ){
+		return 'w';
+	}elsif ( $file->{fd} =~ /r/ ){
+		return 'r';
+	}elsif ( $file->{fd} =~ /^([0-9]+)/ ){
+		my $fd_number=$1;
+		if ( $fd_number == 0 ){
+			return 'r';
+		}elsif (
+				( $fd_number == 1 ) ||
+				( $fd_number == 2 )
+				){
+			return 'w';
+		}
+	}
+
+	return '';
+}
+
+#
+# Returns a hash ref of every process holding either end of every pipe on
+# the system, keyed by the pipe and then by which end, the two ends being
+# brought under the one key so a pipe is the one thing rather than two.
+# This requires a system wide lsof, so it is cached for the run.
+#
+sub _pipeHolders{
+	my $self=$_[0];
+
+	if ( defined( $self->{pipe_holders} ) ){
+		return $self->{pipe_holders};
+	}
+
+	my %holders;
+	foreach my $file ( @{ $self->_allFiles } ){
+		if ( ! $self->_isPipe( $file ) ){
+			next;
+		}
+
+		my $ids=$self->_peerIDs( $file );
+		if (
+			( !defined( $ids ) ) ||
+			( !defined( $ids->{peer_id} ) ) ||
+			( $file->{pid} =~ /^$/ )
+			){
+			next;
+		}
+
+		my $direction=$self->_pipeDirection( $file );
+		if ( $direction =~ /^$/ ){
+			next;
+		}
+
+		# Systems such as FreeBSD hand each end of a pipe a ID of its own
+		# and point them at each other, where Linux hands both the same one.
+		# Sorting the pair puts either end of one under the same key on both.
+		my $key=join( "\0", sort ( $ids->{id}, $ids->{peer_id} ) );
+
+		$holders{$key}{$direction}{ $file->{pid} }=1;
+	}
+
+	$self->{pipe_holders}=\%holders;
+
+	return $self->{pipe_holders};
+}
+
+#
+# Splits the processes holding one end of a pipe into the ones it was made
+# for and the ones that only came by it through being forked off of
+# something already holding it, returning a hash ref with the keys own and
+# inherited. A pool of workers ends up holding a end apiece of every pipe
+# made before it was forked, which is what this is for.
+#
+sub _pipeEnd{
+	my $self=$_[0];
+	my $holders=$_[1];
+	my $key=$_[2];
+	my $direction=$_[3];
+
+	my @own;
+	my @inherited;
+
+	if ( !defined( $holders->{$key}{$direction} ) ){
+		return {
+				own=>\@own,
+				inherited=>\@inherited,
+				};
+	}
+
+	foreach my $pid ( sort { $a <=> $b } keys %{ $holders->{$key}{$direction} } ){
+		my $ppid=$self->{ppids}{$pid};
+		if (
+			( defined( $ppid ) ) &&
+			( defined( $holders->{$key}{$direction}{$ppid} ) )
+			){
+			push( @inherited, $pid );
+		}else{
+			push( @own, $pid );
+		}
+	}
+
+	return {
+			own=>\@own,
+			inherited=>\@inherited,
+			};
+}
+
+#
 # Returns a hash ref of every pipe endpoint on the system, keyed by id,
 # so the far end of a pipe may be looked up by its peer_id. This requires
 # a system wide lsof, so the result is cached for the duration of the run.
@@ -1315,7 +1671,7 @@ sub _allPipeEndpoints{
 
 	my %endpoints;
 	foreach my $file ( @{ $self->_allFiles } ){
-		if ( $self->_isPipe( $file->{type} ) ){
+		if ( $self->_isPipe( $file ) ){
 			my $endpoint=$self->_pipeEndpoint( $file );
 			if ( defined( $endpoint ) ){
 				push( @{ $endpoints{ $endpoint->{id} } }, $endpoint );
@@ -1329,13 +1685,17 @@ sub _allPipeEndpoints{
 }
 
 #
-# Returns true if the lsof type passed to it is a unix socket.
+# Returns true if the file from _lsof is a unix socket.
 #
 sub _isUnix{
 	my $self=$_[0];
-	my $type=$_[1];
+	my $file=$_[1];
 
-	if ( $type =~ /^[Uu][Nn][Ii][Xx]$/ ){
+	if ( !defined( $file ) ){
+		return 0;
+	}
+
+	if ( $file->{type} =~ /^[Uu][Nn][Ii][Xx]$/ ){
 		return 1;
 	}
 
@@ -1573,6 +1933,952 @@ sub _jailTable{
 }
 
 #
+# Returns a array ref of the cgroups a PID is in, each a hash ref with the
+# keys controller and path. A empty list is handed back for anything that
+# is not Linux and for any process that could not be read.
+#
+sub _cgroups{
+	my $self=$_[0];
+	my $pid=$_[1];
+
+	if (
+		( $^O !~ /linux/ ) ||
+		( !defined( $pid ) ) ||
+		( $pid !~ /^[0-9]+$/ )
+		){
+		return [];
+	}
+
+	my $fh;
+	if ( ! open( $fh, '<', '/proc/'.$pid.'/cgroup' ) ){
+		return [];
+	}
+	my @lines=readline( $fh );
+	close( $fh );
+
+	my @cgroups;
+	foreach my $line ( @lines ){
+		chomp( $line );
+
+		# the hierarchy ID, the controllers riding on it, and the path,
+		# with the v2 one being the lone hierarchy zero that names no
+		# controllers, carrying the lot of them
+		if ( $line !~ /^([0-9]+):([^:]*):(.*)$/ ){
+			next;
+		}
+		my $controller=$2;
+		my $path=$3;
+
+		if ( $path =~ /^$/ ){
+			next;
+		}
+
+		push( @cgroups, {
+						 controller=>$controller,
+						 path=>$path,
+						 } );
+	}
+
+	return \@cgroups;
+}
+
+#
+# Returns a hash ref of the namespaces a PID is in, keyed by name with the
+# inode of each as the value. A empty one is handed back for anything that
+# is not Linux and for any process that could not be read, which is what
+# another user's is when not running as root.
+#
+sub _namespaces{
+	my $self=$_[0];
+	my $pid=$_[1];
+
+	my %namespaces;
+
+	if (
+		( $^O !~ /linux/ ) ||
+		( !defined( $pid ) ) ||
+		( $pid !~ /^[0-9]+$/ )
+		){
+		return \%namespaces;
+	}
+
+	my $dh;
+	if ( ! opendir( $dh, '/proc/'.$pid.'/ns' ) ){
+		return \%namespaces;
+	}
+	my @entries=readdir( $dh );
+	closedir( $dh );
+
+	foreach my $entry ( @entries ){
+		# the _for_children ones are what the next fork lands in rather
+		# than what this process is in, which is what is being asked after
+		if (
+			( $entry =~ /^\./ ) ||
+			( $entry =~ /_for_children$/ )
+			){
+			next;
+		}
+
+		my $link=readlink( '/proc/'.$pid.'/ns/'.$entry );
+		if (
+			( !defined( $link ) ) ||
+			( $link !~ /^[a-z\_]+:\[([0-9]+)\]$/ )
+			){
+			next;
+		}
+
+		$namespaces{$entry}=$1;
+	}
+
+	return \%namespaces;
+}
+
+#
+# Returns the namespaces PID 1 is in, which is what the rest are measured
+# against, cached for the duration of the run.
+#
+sub _hostNamespaces{
+	my $self=$_[0];
+
+	if ( defined( $self->{host_namespaces} ) ){
+		return $self->{host_namespaces};
+	}
+
+	$self->{host_namespaces}=$self->_namespaces( 1 );
+
+	return $self->{host_namespaces};
+}
+
+#
+# Returns a array ref of the namespaces a PID is in that PID 1 is not,
+# which is what it has been shut away from the rest of the system in.
+# Nothing is reported when either end of the comparison could not be read.
+#
+sub _privateNamespaces{
+	my $self=$_[0];
+	my $pid=$_[1];
+
+	my $host=$self->_hostNamespaces;
+	my $namespaces=$self->_namespaces( $pid );
+
+	my @private;
+	foreach my $name ( sort keys %{ $namespaces } ){
+		if ( !defined( $host->{$name} ) ){
+			next;
+		}
+		if ( $host->{$name} ne $namespaces->{$name} ){
+			push( @private, $name );
+		}
+	}
+
+	return \@private;
+}
+
+#
+# Picks the container out of a cgroup path, returning a hash ref with the
+# keys type and id, or undef for a path that names none. The runtimes each
+# name the cgroup they put a container in after it, be it the ID they gave
+# it or the name it was started under, with the scope and slice systemd
+# wraps that in around it when systemd is what did the starting.
+#
+sub _containerFromPath{
+	my $self=$_[0];
+	my $path=$_[1];
+
+	my @checks=(
+				[ 'docker', qr/(?:^|\/)docker[\-\/]([0-9a-f]{12,64})(?:\.scope)?(?:$|\/)/ ],
+				[ 'podman', qr/(?:^|\/)libpod[\-_]([0-9a-f]{12,64})(?:\.scope)?(?:$|\/)/ ],
+				[ 'containerd', qr/(?:^|\/)cri-containerd[\-\/]([0-9a-f]{12,64})(?:\.scope)?(?:$|\/)/ ],
+				[ 'crio', qr/(?:^|\/)crio[\-\/]([0-9a-f]{12,64})(?:\.scope)?(?:$|\/)/ ],
+				[ 'lxc', qr/(?:^|\/)lxc(?:\/|\.(?:payload|monitor)[\.\/])([^\/]+)/ ],
+				[ 'machine', qr/(?:^|\/)machine-([^\/]+)\.scope/ ],
+				);
+
+	foreach my $check ( @checks ){
+		if ( $path =~ $check->[1] ){
+			my $id=$1;
+
+			# systemd puts anything that is not a plain character in a unit
+			# name through as a hex escape, which is not how it is known
+			$id=~s/\\x([0-9a-fA-F]{2})/chr(hex($1))/ge;
+
+			return {
+					type=>$check->[0],
+					id=>$id,
+					};
+		}
+	}
+
+	return undef;
+}
+
+#
+# Returns a hash ref with the keys type and id for the container a PID is
+# in, which is cached for the duration of the run. Undef is returned for
+# anything that is not Linux and for a process that is not in one, or at
+# least not in one that named itself in a way that can be picked out.
+#
+sub _containerInfo{
+	my $self=$_[0];
+	my $pid=$_[1];
+
+	if (
+		( $^O !~ /linux/ ) ||
+		( !defined( $pid ) ) ||
+		( $pid !~ /^[0-9]+$/ )
+		){
+		return undef;
+	}
+
+	if ( exists( $self->{containers}{$pid} ) ){
+		return $self->{containers}{$pid};
+	}
+	# noted as looked up either way, so one that is not there is not asked
+	# after over and over
+	$self->{containers}{$pid}=undef;
+
+	foreach my $cgroup ( @{ $self->_cgroups( $pid ) } ){
+		my $container=$self->_containerFromPath( $cgroup->{path} );
+		if ( defined( $container ) ){
+			$self->{containers}{$pid}=$container;
+			last;
+		}
+	}
+
+	return $self->{containers}{$pid};
+}
+
+#
+# Renders the container a PID is in as the runtime that started it with
+# the ID after it, in the same manner as _jailString. Undef is returned
+# when there is no container to speak of.
+#
+sub _containerString{
+	my $self=$_[0];
+	my $pid=$_[1];
+
+	my $container=$self->_containerInfo( $pid );
+	if ( !defined( $container ) ){
+		return undef;
+	}
+
+	# a container ID is a long hash that everything shortens to the first
+	# dozen characters of, which tells them apart well enough
+	my $id=$container->{id};
+	if ( $id =~ /^[0-9a-f]{13,}$/ ){
+		$id=substr( $id, 0, 12 );
+	}
+
+	return color( $self->{idColors}[0] ).$container->{type}.
+	color( $self->{idColors}[1] ).'('.
+	color( $self->{idColors}[2] ).$id.
+	color( $self->{idColors}[1] ).')'
+	.color('reset');
+}
+
+#
+# Renders the cgroups a PID is in. Undef is returned when there is nothing
+# worth saying, which is the case for a process left sitting in the root
+# cgroup where it started.
+#
+sub _cgroupString{
+	my $self=$_[0];
+	my $pid=$_[1];
+
+	my @paths;
+	my %seen;
+	foreach my $cgroup ( @{ $self->_cgroups( $pid ) } ){
+		# the v1 hierarchies more often than not all point at the same
+		# path, which is worth printing no more than once
+		if (
+			( $cgroup->{path} eq '/' ) ||
+			( defined( $seen{ $cgroup->{path} } ) )
+			){
+			next;
+		}
+		$seen{ $cgroup->{path} }=1;
+		push( @paths, $cgroup->{path} );
+	}
+
+	if ( !defined( $paths[0] ) ){
+		return undef;
+	}
+
+	return color( $self->{valColor} ).join( ' ', @paths ).color('reset');
+}
+
+#
+# Renders the namespaces a PID is in that PID 1 is not. Undef is returned
+# for a process sharing the lot of them with the rest of the system.
+#
+sub _namespaceString{
+	my $self=$_[0];
+	my $pid=$_[1];
+
+	my $private=$self->_privateNamespaces( $pid );
+	if ( !defined( $private->[0] ) ){
+		return undef;
+	}
+
+	return color( $self->{valColor} ).join( ', ', @{ $private } ).color('reset');
+}
+
+#
+# Returns the path the cgroup v2 hierarchy is mounted at, which is not
+# always the /sys/fs/cgroup it usually is, so it is taken from the mount
+# table rather than assumed. Undef is returned when there is none, such as
+# on a system still running v1 alone. Cached for the duration of the run.
+#
+sub _cgroupMount{
+	my $self=$_[0];
+
+	if ( exists( $self->{cgroup_mount} ) ){
+		return $self->{cgroup_mount};
+	}
+	$self->{cgroup_mount}=undef;
+
+	if ( $^O !~ /linux/ ){
+		return undef;
+	}
+
+	my $fh;
+	if ( ! open( $fh, '<', '/proc/self/mountinfo' ) ){
+		return undef;
+	}
+	my @lines=readline( $fh );
+	close( $fh );
+
+	foreach my $line ( @lines ){
+		chomp( $line );
+
+		# there are a variable number of optional fields sitting between the
+		# mount point and the separator, so the type has to be picked up
+		# from the far side of the latter
+		my ( $left, $right )=split( /\ \-\ /, $line, 2 );
+		if ( !defined( $right ) ){
+			next;
+		}
+
+		my @left_fields=split( /[\ \t]+/, $left );
+		my @right_fields=split( /[\ \t]+/, $right );
+
+		if (
+			( !defined( $right_fields[0] ) ) ||
+			( $right_fields[0] ne 'cgroup2' ) ||
+			( !defined( $left_fields[4] ) )
+			){
+			next;
+		}
+
+		# anything odd in a path is octal escaped in the mount table
+		my $mount=$left_fields[4];
+		$mount=~s/\\([0-7]{3})/chr(oct($1))/ge;
+
+		$self->{cgroup_mount}=$mount;
+		last;
+	}
+
+	return $self->{cgroup_mount};
+}
+
+#
+# Returns the directory holding the cgroup v2 knobs for a PID, or undef
+# when there is not one to be had.
+#
+sub _cgroupDir{
+	my $self=$_[0];
+	my $pid=$_[1];
+
+	my $mount=$self->_cgroupMount;
+	if ( !defined( $mount ) ){
+		return undef;
+	}
+
+	# the v2 hierarchy is the one that names no controllers, carrying the
+	# lot of them
+	my $path;
+	foreach my $cgroup ( @{ $self->_cgroups( $pid ) } ){
+		if ( $cgroup->{controller} =~ /^$/ ){
+			$path=$cgroup->{path};
+			last;
+		}
+	}
+
+	# The root cgroup has nothing of its own to say. A process in a cgroup
+	# namespace of its own reports it for want of anything it is allowed to
+	# see as well, and reading the root for one of those would hand back
+	# the whole system's numbers as though they were the process's.
+	if (
+		( !defined( $path ) ) ||
+		( $path eq '/' )
+		){
+		return undef;
+	}
+
+	my $dir=$mount.$path;
+	if ( ! -d $dir ){
+		return undef;
+	}
+
+	return $dir;
+}
+
+#
+# Reads a knob from a cgroup directory, handing back its contents with the
+# trailing newline taken off, or undef for one that is not there. Which of
+# them a cgroup has depends on the controllers turned on for it by its
+# parent, so a missing one is nothing out of the ordinary. Cached for the
+# duration of the run, as any number of processes may sit in one cgroup.
+#
+sub _cgroupRead{
+	my $self=$_[0];
+	my $dir=$_[1];
+	my $name=$_[2];
+
+	if ( !defined( $dir ) ){
+		return undef;
+	}
+
+	if ( exists( $self->{cgroup_files}{$dir}{$name} ) ){
+		return $self->{cgroup_files}{$dir}{$name};
+	}
+	# noted as read either way, so one that is not there is not asked after
+	# over and over
+	$self->{cgroup_files}{$dir}{$name}=undef;
+
+	my $fh;
+	if ( ! open( $fh, '<', $dir.'/'.$name ) ){
+		return undef;
+	}
+	my $content=do { local $/; readline( $fh ) };
+	close( $fh );
+
+	if ( !defined( $content ) ){
+		return undef;
+	}
+	$content=~s/\n$//;
+
+	$self->{cgroup_files}{$dir}{$name}=$content;
+
+	return $content;
+}
+
+#
+# The same as _cgroupRead for the knobs holding a list of names and values
+# a line at a time, such as memory.events and cpu.stat, returning a hash
+# ref of them.
+#
+sub _cgroupKeyed{
+	my $self=$_[0];
+	my $dir=$_[1];
+	my $name=$_[2];
+
+	my %values;
+
+	my $content=$self->_cgroupRead( $dir, $name );
+	if ( !defined( $content ) ){
+		return \%values;
+	}
+
+	foreach my $line ( split( /\n/, $content ) ){
+		if ( $line =~ /^(\S+)[\ \t]+(\S+)$/ ){
+			$values{$1}=$2;
+		}
+	}
+
+	return \%values;
+}
+
+#
+# Returns a array ref of the PIDs sitting in a cgroup, which for a systemd
+# unit is the lot of what it started.
+#
+sub _cgroupProcs{
+	my $self=$_[0];
+	my $dir=$_[1];
+
+	my @pids;
+
+	my $content=$self->_cgroupRead( $dir, 'cgroup.procs' );
+	if ( !defined( $content ) ){
+		return \@pids;
+	}
+
+	foreach my $line ( split( /\n/, $content ) ){
+		if ( $line =~ /^([0-9]+)$/ ){
+			push( @pids, $1 );
+		}
+	}
+
+	return \@pids;
+}
+
+#
+# Renders what a cgroup is using of the memory it is allowed, which is the
+# whole cgroup rather than the one process, and takes in the page cache on
+# top of the anonymous memory, so it is not the RSS over again.
+#
+sub _cgroupMemoryString{
+	my $self=$_[0];
+	my $dir=$_[1];
+
+	my $current=$self->_cgroupRead( $dir, 'memory.current' );
+	if (
+		( !defined( $current ) ) ||
+		( $current !~ /^[0-9]+$/ )
+		){
+		return undef;
+	}
+
+	my $toReturn=$self->memString( $current, 'rss' );
+
+	# a limit of max is no limit at all, leaving nothing to measure against
+	my $max=$self->_cgroupRead( $dir, 'memory.max' );
+	my $high=$self->_cgroupRead( $dir, 'memory.high' );
+	if (
+		( defined( $max ) ) &&
+		( $max =~ /^[0-9]+$/ )
+		){
+		$toReturn=$toReturn.color( $self->{varColor} ).' / '.color('reset').
+		$self->memString( $max, 'vsz' );
+	}elsif (
+			( defined( $high ) ) &&
+			( $high =~ /^[0-9]+$/ )
+			){
+		# the soft limit, which is pushed back under rather than kept under
+		$toReturn=$toReturn.color( $self->{varColor} ).' / '.color('reset').
+		$self->memString( $high, 'vsz' ).color( $self->{varColor} ).' high'.color('reset');
+	}
+
+	my $peak=$self->_cgroupRead( $dir, 'memory.peak' );
+	if (
+		( defined( $peak ) ) &&
+		( $peak =~ /^[0-9]+$/ )
+		){
+		$toReturn=$toReturn.color( $self->{varColor} ).' peak '.color('reset').
+		$self->memString( $peak, 'size' );
+	}
+
+	my $swap=$self->_cgroupRead( $dir, 'memory.swap.current' );
+	if (
+		( defined( $swap ) ) &&
+		( $swap =~ /^[1-9][0-9]*$/ )
+		){
+		$toReturn=$toReturn.color( $self->{varColor} ).' swap '.color('reset').
+		$self->memString( $swap, 'size' );
+	}
+
+	return $toReturn;
+}
+
+#
+# Renders what a cgroup is allowed of the CPU and what it has been held
+# back to it with. Undef is returned when it has neither a quota nor any
+# throttling to it, the time it has used being no more than what the
+# process table already says for every process in it.
+#
+sub _cgroupCpuString{
+	my $self=$_[0];
+	my $dir=$_[1];
+
+	my @parts;
+
+	# the quota and the period it is handed out over, which says a good
+	# deal more as the number of cores it works out to
+	my $max=$self->_cgroupRead( $dir, 'cpu.max' );
+	if (
+		( defined( $max ) ) &&
+		( $max =~ /^([0-9]+)[\ \t]+([0-9]+)$/ ) &&
+		( $2 > 0 )
+		){
+		my $cores=sprintf( '%.2f', $1 / $2 );
+		$cores=~s/0+$//;
+		$cores=~s/\.$//;
+		push( @parts, color( $self->{varColor} ).'quota '.
+			  color( $self->{valColor} ).$cores.color('reset') );
+	}
+
+	my $stat=$self->_cgroupKeyed( $dir, 'cpu.stat' );
+
+	my $throttled;
+	if (
+		( defined( $stat->{nr_throttled} ) ) &&
+		( $stat->{nr_throttled} =~ /^[1-9][0-9]*$/ )
+		){
+		$throttled=color( $self->{varColor} ).'throttled '.
+		color( $self->{processColor} ).$stat->{nr_throttled}.color('reset');
+
+		if (
+			( defined( $stat->{throttled_usec} ) ) &&
+			( $stat->{throttled_usec} =~ /^[0-9]+$/ )
+			){
+			# timeString takes microseconds on Linux, which is what the
+			# cgroup knobs are counted in
+			$throttled=$throttled.color( $self->{varColor} ).' for '.color('reset').
+			$self->timeString( $stat->{throttled_usec} );
+		}
+	}
+
+	# nothing here is worth a line of its own for a cgroup that is neither
+	# capped nor being held back
+	if (
+		( !defined( $parts[0] ) ) &&
+		( !defined( $throttled ) )
+		){
+		return undef;
+	}
+
+	if (
+		( defined( $stat->{usage_usec} ) ) &&
+		( $stat->{usage_usec} =~ /^[0-9]+$/ )
+		){
+		push( @parts, color( $self->{varColor} ).'used '.color('reset').
+			  $self->timeString( $stat->{usage_usec} ) );
+	}
+
+	if ( defined( $throttled ) ){
+		push( @parts, $throttled );
+	}
+
+	return join( color( $self->{valColor} ).', '.color('reset'), @parts );
+}
+
+#
+# Renders how many processes a cgroup is holding against how many it is
+# allowed. Undef is returned when there is no limit set, the count on its
+# own saying nothing the list of them under jail_info does not.
+#
+sub _cgroupPidsString{
+	my $self=$_[0];
+	my $dir=$_[1];
+
+	my $max=$self->_cgroupRead( $dir, 'pids.max' );
+	my $current=$self->_cgroupRead( $dir, 'pids.current' );
+
+	if (
+		( !defined( $max ) ) ||
+		( $max !~ /^[0-9]+$/ ) ||
+		( !defined( $current ) ) ||
+		( $current !~ /^[0-9]+$/ )
+		){
+		return undef;
+	}
+
+	return color( $self->{valColor} ).$current.
+	color( $self->{varColor} ).' / '.
+	color( $self->{valColor} ).$max.color('reset');
+}
+
+#
+# Renders the times a cgroup has been up against one of its limits, which
+# is where a OOM kill shows up. Undef is returned for one that has never
+# been, everything sitting at zero having nothing to say.
+#
+sub _cgroupEventsString{
+	my $self=$_[0];
+	my $dir=$_[1];
+
+	my $events=$self->_cgroupKeyed( $dir, 'memory.events' );
+
+	my @parts;
+	foreach my $key ( 'oom_kill', 'oom_group_kill', 'oom', 'max', 'high', 'low' ){
+		if (
+			( !defined( $events->{$key} ) ) ||
+			( $events->{$key} !~ /^[1-9][0-9]*$/ )
+			){
+			next;
+		}
+		push( @parts, color( $self->{varColor} ).$key.' '.
+			  color( $self->{processColor} ).$events->{$key}.color('reset') );
+	}
+
+	if ( !defined( $parts[0] ) ){
+		return undef;
+	}
+
+	return join( color( $self->{valColor} ).', '.color('reset'), @parts );
+}
+
+#
+# Renders how much of the time something in a cgroup was held up waiting
+# on the CPU, the memory, or the disk, as the ten second and one minute
+# run of it. Undef is returned when nothing is being held up at all.
+#
+sub _cgroupPressureString{
+	my $self=$_[0];
+	my $dir=$_[1];
+
+	my @parts;
+	foreach my $what ( 'cpu', 'memory', 'io' ){
+		my $content=$self->_cgroupRead( $dir, $what.'.pressure' );
+		if ( !defined( $content ) ){
+			next;
+		}
+
+		# the some line covers anything at all being held up, where full is
+		# only the times nothing in the cgroup could run
+		my $avg10;
+		my $avg60;
+		foreach my $line ( split( /\n/, $content ) ){
+			if ( $line !~ /^some[\ \t]/ ){
+				next;
+			}
+			if ( $line =~ /avg10=([0-9\.]+)/ ){
+				$avg10=$1;
+			}
+			if ( $line =~ /avg60=([0-9\.]+)/ ){
+				$avg60=$1;
+			}
+		}
+
+		if (
+			( !defined( $avg10 ) ) ||
+			( $avg10 <= 0 )
+			){
+			next;
+		}
+
+		my $rendered=color( $self->{varColor} ).$what.' '.
+		color( $self->{processColor} ).$avg10.color('reset');
+		if ( defined( $avg60 ) ){
+			$rendered=$rendered.color( $self->{valColor} ).'/'.
+			color( $self->{processColor} ).$avg60.color('reset');
+		}
+		push( @parts, $rendered );
+	}
+
+	if ( !defined( $parts[0] ) ){
+		return undef;
+	}
+
+	return join( color( $self->{valColor} ).', '.color('reset'), @parts );
+}
+
+#
+# Builds the table of the cgroups and namespaces a PID is in, which is
+# what stands in for the jail parameters on Linux. A empty string is
+# returned for anything else and for any process that could not be read.
+#
+sub _containerTable{
+	my $self=$_[0];
+	my $pid=$_[1];
+	my $commands=$_[2];
+
+	if ( $^O !~ /linux/ ){
+		return '';
+	}
+
+	my @rows;
+
+	foreach my $cgroup ( @{ $self->_cgroups( $pid ) } ){
+		# the v2 hierarchy names no controllers, being the one carrying all
+		# of them, so there is nothing to tell it apart by
+		my $key='cgroup';
+		if ( $cgroup->{controller} !~ /^$/ ){
+			$key=$key.':'.$cgroup->{controller};
+		}
+		push( @rows, [
+					  color( $self->{varColor} ).$key.color('reset'),
+					  color( $self->{valColor} ).$cgroup->{path}.color('reset'),
+					  ]);
+	}
+
+	my $host=$self->_hostNamespaces;
+	my $namespaces=$self->_namespaces( $pid );
+	foreach my $name ( sort keys %{ $namespaces } ){
+		my $value=color( $self->{valColor} ).$namespaces->{$name}.color('reset');
+
+		# the ones it does not share with PID 1 are the whole point of
+		# looking, so they are called out rather than left to be spotted
+		if (
+			( defined( $host->{$name} ) ) &&
+			( $host->{$name} ne $namespaces->{$name} )
+			){
+			$value=$value.' '.color( $self->{processColor} ).'private'.color('reset');
+		}
+
+		push( @rows, [
+					  color( $self->{varColor} ).'ns:'.$name.color('reset'),
+					  $value,
+					  ]);
+	}
+
+	#
+	# the knobs of the cgroup itself, which are only there for the ones a
+	# controller has been turned on for
+	#
+	my $dir=$self->_cgroupDir( $pid );
+	if ( defined( $dir ) ){
+		# what is turned on is what says why the rest of these are or are
+		# not here
+		foreach my $name ( 'cgroup.controllers', 'cgroup.type' ){
+			my $value=$self->_cgroupRead( $dir, $name );
+			if (
+				( defined( $value ) ) &&
+				( $value !~ /^$/ )
+				){
+				push( @rows, [
+							  color( $self->{varColor} ).$name.color('reset'),
+							  color( $self->{valColor} ).$value.color('reset'),
+							  ]);
+			}
+		}
+
+		# what else is in here, gathered up under the command each is
+		# running in the same manner as the peers of a endpoint
+		my $procs=$self->_cgroupProcs( $dir );
+		if ( defined( $procs->[0] ) ){
+			push( @rows, [
+						  color( $self->{varColor} ).'cgroup.procs'.color('reset'),
+						  color( $self->{valColor} ).( $#{ $procs } + 1 ).' '.
+						  $self->_commandGroups( $procs, $commands ).color('reset'),
+						  ]);
+		}
+
+		# the sizes are worth making readable in the same manner as the
+		# rest of the memory bits
+		foreach my $name (
+						  'memory.current', 'memory.peak', 'memory.high',
+						  'memory.max', 'memory.swap.current', 'memory.swap.max'
+						  ){
+			my $value=$self->_cgroupRead( $dir, $name );
+			if ( !defined( $value ) ){
+				next;
+			}
+			if ( $value =~ /^[0-9]+$/ ){
+				$value=$self->memString( $value, 'size' );
+			}else{
+				$value=color( $self->{valColor} ).$value.color('reset');
+			}
+			push( @rows, [
+						  color( $self->{varColor} ).$name.color('reset'),
+						  $value,
+						  ]);
+		}
+
+		# What memory.current is made up of, which is what says how much of
+		# it is the cgroup's own and how much is just page cache it has been
+		# through. There are a great many of these and the ones sitting at
+		# zero have nothing to add, so only what is actually there is
+		# printed, and only the handful worth reading through at that.
+		my $memory_stat=$self->_cgroupKeyed( $dir, 'memory.stat' );
+		foreach my $key (
+						 'anon', 'file', 'shmem', 'file_mapped', 'file_dirty',
+						 'file_writeback', 'swapcached', 'unevictable', 'anon_thp',
+						 'kernel', 'kernel_stack', 'pagetables', 'percpu', 'sock',
+						 'slab'
+						 ){
+			if (
+				( !defined( $memory_stat->{$key} ) ) ||
+				( $memory_stat->{$key} !~ /^[1-9][0-9]*$/ )
+				){
+				next;
+			}
+			push( @rows, [
+						  color( $self->{varColor} ).'memory.stat:'.$key.color('reset'),
+						  $self->memString( $memory_stat->{$key}, 'size' ),
+						  ]);
+		}
+
+		# these are counts of things that happened rather than sizes, so
+		# there is nothing to make readable about them
+		foreach my $key ( 'pgmajfault', 'pswpin', 'pswpout' ){
+			if (
+				( !defined( $memory_stat->{$key} ) ) ||
+				( $memory_stat->{$key} !~ /^[1-9][0-9]*$/ )
+				){
+				next;
+			}
+			push( @rows, [
+						  color( $self->{varColor} ).'memory.stat:'.$key.color('reset'),
+						  color( $self->{valColor} ).$memory_stat->{$key}.color('reset'),
+						  ]);
+		}
+
+		foreach my $name ( 'pids.current', 'pids.peak', 'pids.max', 'cpu.max' ){
+			my $value=$self->_cgroupRead( $dir, $name );
+			if (
+				( defined( $value ) ) &&
+				( $value !~ /^$/ )
+				){
+				push( @rows, [
+							  color( $self->{varColor} ).$name.color('reset'),
+							  color( $self->{valColor} ).$value.color('reset'),
+							  ]);
+			}
+		}
+
+		# the times are counted in microseconds, which is what timeString
+		# takes on Linux
+		my $stat=$self->_cgroupKeyed( $dir, 'cpu.stat' );
+		foreach my $key ( 'usage_usec', 'user_usec', 'system_usec', 'nr_periods',
+						  'nr_throttled', 'throttled_usec' ){
+			if ( !defined( $stat->{$key} ) ){
+				next;
+			}
+			my $value=color( $self->{valColor} ).$stat->{$key}.color('reset');
+			if (
+				( $key =~ /_usec$/ ) &&
+				( $stat->{$key} =~ /^[0-9]+$/ )
+				){
+				$value=$self->timeString( $stat->{$key} );
+			}
+			push( @rows, [
+						  color( $self->{varColor} ).'cpu.stat:'.$key.color('reset'),
+						  $value,
+						  ]);
+		}
+
+		my $events=$self->_cgroupKeyed( $dir, 'memory.events' );
+		foreach my $key ( sort keys %{ $events } ){
+			my $value=color( $self->{valColor} ).$events->{$key}.color('reset');
+			# the ones that actually happened are the whole point of looking
+			if ( $events->{$key} =~ /^[1-9][0-9]*$/ ){
+				$value=color( $self->{processColor} ).$events->{$key}.color('reset');
+			}
+			push( @rows, [
+						  color( $self->{varColor} ).'memory.events:'.$key.color('reset'),
+						  $value,
+						  ]);
+		}
+
+		foreach my $what ( 'cpu', 'memory', 'io' ){
+			my $content=$self->_cgroupRead( $dir, $what.'.pressure' );
+			if ( !defined( $content ) ){
+				next;
+			}
+			foreach my $line ( split( /\n/, $content ) ){
+				if ( $line !~ /^(some|full)[\ \t]+(.*)$/ ){
+					next;
+				}
+				push( @rows, [
+							  color( $self->{varColor} ).$what.'.pressure:'.$1.color('reset'),
+							  color( $self->{valColor} ).$2.color('reset'),
+							  ]);
+			}
+		}
+	}
+
+	if ( !defined( $rows[0] ) ){
+		return '';
+	}
+
+	my $ctb = Text::ANSITable->new;
+	$ctb->border_style('Default::none_ascii');
+	$ctb->color_theme('Default::no_color');
+	$ctb->show_header(1);
+	$ctb->set_column_style(0, pad => 0);
+	$ctb->set_column_style(1, pad => 1);
+	$ctb->columns([
+				   color( $self->{varColor} ).'CONTAINER ARG'.color('reset'),
+				   color( $self->{varColor} ).'VALUE'.color('reset')
+				   ]);
+	$ctb->add_rows( \@rows );
+
+	return $ctb->draw;
+}
+
+#
 # Proc::ProcessTable works the memory sizes out in a 32 bit integer on
 # some systems, FreeBSD included, so anything past 2G comes back having
 # wrapped around into the negative. Adding the 4G it lost back on puts
@@ -1616,19 +2922,21 @@ sub _shmTotal{
 	my %seen;
 	foreach my $file ( @{ $files } ){
 		if (
-			( ! $self->_isShm( $file->{type} ) ) ||
+			( ! $self->_isShm( $file ) ) ||
 			( $file->{size} !~ /^[0-9]+$/ )
 			){
 			next;
 		}
 
-		# lsof gives most things a node identifier, which is the only way
-		# of telling one anonymous object from another
-		if ( $file->{node_id} !~ /^$/ ){
-			if ( defined( $seen{ $file->{node_id} } ) ){
+		# The endpoint ID names the object itself, which is what tells one
+		# anonymous object from another. Linux reports no node identifier
+		# at all, so that falls back to the device and inode there.
+		my $ids=$self->_peerIDs( $file );
+		if ( defined( $ids ) ){
+			if ( defined( $seen{ $ids->{id} } ) ){
 				next;
 			}
-			$seen{ $file->{node_id} }=1;
+			$seen{ $ids->{id} }=1;
 		}
 
 		$total=$total + $file->{size};
@@ -1638,13 +2946,33 @@ sub _shmTotal{
 }
 
 #
-# Returns true if the lsof type passed to it is a shared memory object.
+# Returns true if the file from _lsof is a shared memory object.
 #
 sub _isShm{
 	my $self=$_[0];
-	my $type=$_[1];
+	my $file=$_[1];
 
-	if ( $type =~ /^[Ss][Hh][Mm]$/ ){
+	if ( !defined( $file ) ){
+		return 0;
+	}
+
+	if ( $file->{type} =~ /^[Ss][Hh][Mm]$/ ){
+		return 1;
+	}
+
+	# Linux has no type of its own for these, handing them the same REG
+	# every other file gets, so the name is what tells them apart. POSIX
+	# objects live on the tmpfs mounted at /dev/shm, SysV segments are
+	# named after their key, and the anonymous ones made by memfd_create
+	# after whatever they were passed.
+	if (
+		( $file->{type} =~ /^[Rr][Ee][Gg]$/ ) &&
+		(
+		 ( $file->{match_name} =~ /^\/dev\/shm\// ) ||
+		 ( $file->{match_name} =~ /^\/SYSV/ ) ||
+		 ( $file->{match_name} =~ /^\/memfd:/ )
+		 )
+		){
 		return 1;
 	}
 
@@ -1665,11 +2993,11 @@ sub _peerIDs{
 	my $file=$_[1];
 
 	my $class;
-	if ( $self->_isUnix( $file->{type} ) ){
+	if ( $self->_isUnix( $file ) ){
 		$class='unix';
-	}elsif ( $self->_isPipe( $file->{type} ) ){
+	}elsif ( $self->_isPipe( $file ) ){
 		$class='pipe';
-	}elsif ( $self->_isShm( $file->{type} ) ){
+	}elsif ( $self->_isShm( $file ) ){
 		$class='shm';
 	}else{
 		return undef;
@@ -1688,8 +3016,27 @@ sub _peerIDs{
 		$id=$class.':'.$file->{device}.':'.$file->{node};
 	}elsif ( $file->{device} !~ /^$/ ){
 		$id=$class.':'.$file->{device};
+	}elsif (
+			( $class eq 'shm' ) &&
+			( $file->{match_name} !~ /^$/ )
+			){
+		$id=$class.':'.$file->{match_name};
 	}else{
 		return undef;
+	}
+
+	# A SysV segment is handed the same device and a inode of zero as every
+	# other one of them on Linux, leaving what it is named after its key as
+	# the only thing telling one from the next. The same goes for anything
+	# else lsof reports no inode of its own for, such as a object that has
+	# been unlinked.
+	if (
+		( $class eq 'shm' ) &&
+		( $file->{node_id} =~ /^$/ ) &&
+		( $file->{node} !~ /^[1-9][0-9]*$/ ) &&
+		( $file->{match_name} !~ /^$/ )
+		){
+		$id=$id.':'.$file->{match_name};
 	}
 
 	# Systems such as FreeBSD point at the far end of a pipe or connected
@@ -1728,10 +3075,13 @@ sub _allPeers{
 
 	my %holders;
 	my %pointers;
+	my %endpoints;
+	my %endpoint_known;
 	# a endpoint may be open on more than one FD in a process, which is
 	# worth mentioning no more than once
 	my %seen_holder;
 	my %seen_pointer;
+	my %seen_endpoint;
 	foreach my $file ( @{ $self->_allFiles } ){
 		my $ids=$self->_peerIDs( $file );
 		if (
@@ -1753,11 +3103,25 @@ sub _allPeers{
 			$seen_pointer{ $ids->{peer_id} }{ $file->{pid} }=1;
 			push( @{ $pointers{ $ids->{peer_id} } }, $file->{pid} );
 		}
+
+		# whatever lsof +E named as being on the far end of it, which is the
+		# only way around for the unix sockets on Linux
+		if ( $self->_lsofHasEndpoint( $file ) ){
+			$endpoint_known{ $ids->{id} }=1;
+		}
+		foreach my $endpoint_pid ( @{ $self->_lsofEndpointPIDs( $file ) } ){
+			if ( !defined( $seen_endpoint{ $ids->{id} }{ $endpoint_pid } ) ){
+				$seen_endpoint{ $ids->{id} }{ $endpoint_pid }=1;
+				push( @{ $endpoints{ $ids->{id} } }, $endpoint_pid );
+			}
+		}
 	}
 
 	$self->{peer_pids}={
 						holders=>\%holders,
 						pointers=>\%pointers,
+						endpoints=>\%endpoints,
+						endpoint_known=>\%endpoint_known,
 						};
 
 	return $self->{peer_pids};
@@ -1815,6 +3179,17 @@ sub _peerCommands{
 		}
 	}
 
+	# and so is whatever lsof +E named as being on the far end of it, which
+	# is what covers the unix sockets on Linux
+	if ( defined( $peers->{endpoints}{ $ids->{id} } ) ){
+		foreach my $peer_pid ( @{ $peers->{endpoints}{ $ids->{id} } } ){
+			if ( !defined( $seen{$peer_pid} ) ){
+				$seen{$peer_pid}=1;
+				push( @peer_pids, $peer_pid );
+			}
+		}
+	}
+
 	if ( !defined( $peer_pids[0] ) ){
 		# A endpoint lsof points somewhere with is known to have a far end,
 		# as is one held more than once, so say that it could not be
@@ -1825,6 +3200,7 @@ sub _peerCommands{
 			 ( defined( $ids->{peer_id} ) ) &&
 			 ( $ids->{peer_id} ne $ids->{id} )
 			 ) ||
+			( defined( $peers->{endpoint_known}{ $ids->{id} } ) ) ||
 			(
 			 ( $file->{share_count} =~ /^[0-9]+$/ ) &&
 			 ( $file->{share_count} > 1 )
@@ -1835,22 +3211,32 @@ sub _peerCommands{
 		return undef;
 	}
 
-	# Something like a shared memory object may be held by a great many
-	# processes, which for the most part are copies of each other, so the
-	# PIDs are gathered up under the command they are running rather than
-	# printing that over and over. Both how many commands are printed and
-	# how many PIDs are printed for any one of them are capped via
-	# peer_max, as even grouped up it may be more than is worth reading
-	# through, with zero or less printing all of them.
+	return $self->_commandGroups( \@peer_pids, $commands );
+}
+
+#
+# Gathers a list of PIDs up under the command each of them is running and
+# renders it. Something like a shared memory object may be held by a great
+# many processes, which for the most part are copies of each other, so
+# they are grouped rather than printing the same command over and over.
+# Both how many commands are printed and how many PIDs are printed for any
+# one of them are capped via peer_max, as even grouped up it may be more
+# than is worth reading through, with zero or less printing all of them.
+#
+sub _commandGroups{
+	my $self=$_[0];
+	my $pids=$_[1];
+	my $commands=$_[2];
+
 	my %groups;
 	my @order;
-	foreach my $peer_pid ( sort { $a <=> $b } @peer_pids ){
-		my $command=$self->_peerCommandName( $peer_pid, $commands, $self->{peer_command_length} );
+	foreach my $pid ( sort { $a <=> $b } @{ $pids } ){
+		my $command=$self->_peerCommandName( $pid, $commands, $self->{peer_command_length} );
 		if ( !defined( $groups{$command} ) ){
 			$groups{$command}=[];
 			push( @order, $command );
 		}
-		push( @{ $groups{$command} }, $peer_pid );
+		push( @{ $groups{$command} }, $pid );
 	}
 
 	my $more_commands=0;
@@ -1919,7 +3305,7 @@ sub _pipeWalk{
 			}
 			foreach my $path ( @{ $self->_pipeWalk( $edges, $next, \%new_seen ) } ){
 				push( @paths, [ $pid, @{ $path } ] );
-				if ( $#paths >= $self->{pipe_chain_max} ){
+				if ( $#paths >= ( $self->{pipe_chain_max} - 1 ) ){
 					return \@paths;
 				}
 			}
@@ -1935,59 +3321,145 @@ sub _pipeWalk{
 }
 
 #
-# Returns a array ref of the pipelines the PID is a part of, each being a
-# array ref of PIDs in the order the data flows through them.
+# Returns a array ref of what there is to say about the pipes a PID sits
+# on, each being a hash ref with a type of chain, channel, or pipe.
+#
+# A pipe with one process writing and one reading is a plain link, the
+# sort a shell makes when it strings two commands together, and those are
+# followed out into the chains they form. Anything else, such as the pile
+# a worker pool shares out, is left as the one pipe it is rather than
+# being strung into a pipeline it is not.
 #
 sub _pipeChains{
 	my $self=$_[0];
 	my $pid=$_[1];
 
-	my $endpoints=$self->_allPipeEndpoints;
+	my $holders=$self->_pipeHolders;
 
-	# every pipe with a writer at one end and a reader at the other is a
-	# edge going from the writer to the reader
 	my %forward;
 	my %backward;
-	foreach my $id ( keys %{ $endpoints } ){
-		foreach my $endpoint ( @{ $endpoints->{$id} } ){
-			if (
-				( $endpoint->{direction} ne 'w' ) ||
-				( !defined( $endpoints->{ $endpoint->{peer_id} } ) )
-				){
-				next;
-			}
-			foreach my $peer ( @{ $endpoints->{ $endpoint->{peer_id} } } ){
-				# both ends share a id on systems that tie them together
-				# via the node, so the endpoint itself has to be skipped
-				if (
-					( $peer->{pid} eq $endpoint->{pid} ) &&
-					( $peer->{fd} eq $endpoint->{fd} )
-					){
-					next;
-				}
-				if ( $peer->{direction} ne 'r' ){
-					next;
-				}
-				$forward{ $endpoint->{pid} }{ $peer->{pid} }=1;
-				$backward{ $peer->{pid} }{ $endpoint->{pid} }=1;
-			}
+	my @other_pipes;
+	foreach my $key ( sort keys %{ $holders } ){
+		my $writers=$self->_pipeEnd( $holders, $key, 'w' );
+		my $readers=$self->_pipeEnd( $holders, $key, 'r' );
+
+		# a plain link, which is what a pipeline is built out of
+		if (
+			( $#{ $writers->{own} } == 0 ) &&
+			( $#{ $readers->{own} } == 0 ) &&
+			( $writers->{own}[0] ne $readers->{own}[0] )
+			){
+			$forward{ $writers->{own}[0] }{ $readers->{own}[0] }=1;
+			$backward{ $readers->{own}[0] }{ $writers->{own}[0] }=1;
+			next;
+		}
+
+		# anything else only gets a line of its own when the process being
+		# asked after is actually on it
+		if (
+			( defined( $holders->{$key}{w}{$pid} ) ) ||
+			( defined( $holders->{$key}{r}{$pid} ) )
+			){
+			push( @other_pipes, {
+								 type=>'pipe',
+								 writers=>$writers,
+								 readers=>$readers,
+								 } );
 		}
 	}
 
+	# Two processes each running a pipe at the other are talking both ways,
+	# which is the one channel between them rather than two pipelines that
+	# happen to point opposite ways. Taking those out here rather than
+	# reading them back off the chains keeps what is printed the same from
+	# either end of one, a walk started from either side otherwise having
+	# already been through the far end by the time it comes back around.
+	my @channels;
+	my %paired;
+	foreach my $from ( sort keys %forward ){
+		foreach my $to ( sort keys %{ $forward{$from} } ){
+			if ( !defined( $forward{$to}{$from} ) ){
+				next;
+			}
+
+			my $pair_key=join( "\0", sort { $a <=> $b } ( $from, $to ) );
+			if ( !defined( $paired{$pair_key} ) ){
+				$paired{$pair_key}=1;
+
+				# which way round it was found says nothing, a channel
+				# running both ways, so the process being asked after leads
+				# where it is one of the two
+				my @channel=( $from, $to );
+				if ( $channel[1] eq $pid ){
+					@channel=( $channel[1], $channel[0] );
+				}
+
+				# only the ones it is actually on are its to report
+				if (
+					( $from eq $pid ) ||
+					( $to eq $pid )
+					){
+					push( @channels, {
+									  type=>'channel',
+									  pids=>\@channel,
+									  } );
+				}
+			}
+
+			# both ways of it go, the pair being the one thing now, and
+			# leaving either behind would have it printed over again as a
+			# pipeline of its own
+			delete( $forward{$from}{$to} );
+			delete( $backward{$to}{$from} );
+			delete( $forward{$to}{$from} );
+			delete( $backward{$from}{$to} );
+		}
+	}
+
+	# whatever plain links are left over are followed out into the
+	# pipelines they form
 	my @chains;
+	my %seen_chains;
 	foreach my $head ( @{ $self->_pipeWalk( \%backward, $pid, {} ) } ){
-		foreach my $tail ( @{ $self->_pipeWalk( \%forward, $pid, {} ) } ){
+		# whatever the head took is spoken for, a process being in a
+		# pipeline once rather than on both sides of itself
+		my %head_seen;
+		foreach my $head_pid ( @{ $head } ){
+			$head_seen{$head_pid}=1;
+		}
+
+		foreach my $tail ( @{ $self->_pipeWalk( \%forward, $pid, \%head_seen ) } ){
 			# both walks start from the PID, so the head is flipped around
 			# and the duplicate copy of it dropped off of the tail
 			my @chain=( reverse( @{ $head } ), @{ $tail }[ 1 .. $#{ $tail } ] );
-			push( @chains, \@chain );
-			if ( $#chains >= $self->{pipe_chain_max} ){
-				return \@chains;
+
+			if ( $#chain < 1 ){
+				next;
 			}
+			my $key=join( ',', sort { $a <=> $b } @chain );
+			if ( defined( $seen_chains{$key} ) ){
+				next;
+			}
+			$seen_chains{$key}=1;
+			push( @chains, \@chain );
 		}
 	}
 
-	return \@chains;
+	my @toReturn=@channels;
+	foreach my $chain ( @chains ){
+		push( @toReturn, {
+						  type=>'chain',
+						  pids=>$chain,
+						  } );
+	}
+
+	push( @toReturn, @other_pipes );
+
+	if ( $#toReturn >= $self->{pipe_chain_max} ){
+		@toReturn=@toReturn[ 0 .. $self->{pipe_chain_max} - 1 ];
+	}
+
+	return \@toReturn;
 }
 
 #
@@ -2031,6 +3503,73 @@ sub _peerCommand{
 }
 
 #
+# Renders one PID in a pipe chain, picking the process being asked after
+# out from the rest of them.
+#
+sub _pipeCommandString{
+	my $self=$_[0];
+	my $chain_pid=$_[1];
+	my $pid=$_[2];
+	my $commands=$_[3];
+
+	my $command=$self->_peerCommand( $chain_pid, $commands );
+
+	if ( $chain_pid eq $pid ){
+		return color( $self->{processColor} ).$command.color('reset');
+	}
+
+	return color( $self->{valColor} ).$command.color('reset');
+}
+
+#
+# Renders one end of a pipe that is not a plain link, being whatever the
+# pipe was made for followed by whatever only came by it through being
+# forked off of one of those. A end with nothing on it at all, such as the
+# read end of a pipe every reader has since gone away from, prints as a ?.
+#
+sub _pipeEndString{
+	my $self=$_[0];
+	my $end=$_[1];
+	my $pid=$_[2];
+	my $commands=$_[3];
+
+	my @parts;
+
+	foreach my $end_pid ( @{ $end->{own} } ){
+		push( @parts, $self->_pipeCommandString( $end_pid, $pid, $commands ) );
+	}
+
+	if ( defined( $end->{inherited}[0] ) ){
+		my @inherited=@{ $end->{inherited} };
+
+		# these are all but always the same command over again, the whole of
+		# what sets them apart being which fork they are, so only the PIDs
+		# are printed
+		my $more=0;
+		if (
+			( $self->{peer_max} > 0 ) &&
+			( $#inherited >= $self->{peer_max} )
+			){
+			$more=$#inherited + 1 - $self->{peer_max};
+			@inherited=@inherited[ 0 .. $self->{peer_max} - 1 ];
+		}
+
+		my $rendered=color( $self->{varColor} ).'inherited('.
+		color( $self->{valColor} ).join( ', ', @inherited );
+		if ( $more > 0 ){
+			$rendered=$rendered.', + '.$more.' more';
+		}
+		push( @parts, $rendered.color( $self->{varColor} ).')'.color('reset') );
+	}
+
+	if ( !defined( $parts[0] ) ){
+		return color( $self->{valColor} ).'?'.color('reset');
+	}
+
+	return join( color( $self->{valColor} ).', '.color('reset'), @parts );
+}
+
+#
 # Builds the pipe chain table for a PID, returning a empty string if
 # there is nothing worth showing.
 #
@@ -2040,24 +3579,36 @@ sub _pipeChainTable{
 	my $commands=$_[2];
 
 	my @rows;
-	foreach my $chain ( @{ $self->_pipeChains( $pid ) } ){
-		# a chain of just the process itself says nothing, which is what
-		# is left over when the far end of every pipe is out of reach
-		if ( $#{ $chain } < 1 ){
-			next;
-		}
+	foreach my $item ( @{ $self->_pipeChains( $pid ) } ){
+		my $row;
 
-		my @parts;
-		foreach my $chain_pid ( @{ $chain } ){
-			my $command=$self->_peerCommand( $chain_pid, $commands );
-			if ( $chain_pid eq $pid ){
-				push( @parts, color( $self->{processColor} ).$command.color('reset') );
-			}else{
-				push( @parts, color( $self->{valColor} ).$command.color('reset') );
+		if ( $item->{type} eq 'pipe' ){
+			$row=$self->_pipeEndString( $item->{writers}, $pid, $commands ).
+			color( $self->{varColor} ).' | '.color('reset').
+			$self->_pipeEndString( $item->{readers}, $pid, $commands );
+		}else{
+			# a chain of just the process itself says nothing, which is what
+			# is left over when the far end of every pipe is out of reach
+			if ( $#{ $item->{pids} } < 1 ){
+				next;
 			}
+
+			my @parts;
+			foreach my $chain_pid ( @{ $item->{pids} } ){
+				push( @parts, $self->_pipeCommandString( $chain_pid, $pid, $commands ) );
+			}
+
+			# a channel is the one pipe apiece either way between two
+			# processes rather than a pipeline running through them
+			my $joiner=' | ';
+			if ( $item->{type} eq 'channel' ){
+				$joiner=' <-> ';
+			}
+
+			$row=join( color( $self->{varColor} ).$joiner.color('reset'), @parts );
 		}
 
-		push( @rows, [ join( color( $self->{varColor} ).' | '.color('reset'), @parts ) ] );
+		push( @rows, [ $row ] );
 	}
 
 	if ( !defined( $rows[0] ) ){
@@ -2239,6 +3790,31 @@ sub nextColor{
 	return $color;
 }
 
+=head1 SHARED MEMORY
+
+The total size of the shared memory a process holds is shown with the
+rest of the memory bits. A object held on more than one FD is counted the
+once, the object being what takes up the memory rather than the handle
+on it.
+
+    Total SHM 1.076M
+
+FreeBSD and the like hand these a SHM type of their own. Linux has no
+such type, giving them the same REG every other file gets, so there they
+are picked out by name instead.
+
+    /dev/shm/*  POSIX objects, which live on a tmpfs
+    /SYSV*      SysV segments, which are named after their key
+    /memfd:*    the anonymous ones made by memfd_create
+
+The TYPE column is whatever lsof called it either way, so these read as
+REG on Linux rather than SHM.
+
+Every one of them is deduped and has its peers looked up in the same
+manner as any other, so what else holds a object is shown for it as per
+L</peers> and the ones that print the same are rolled up as per
+L</dont_dedup>.
+
 =head1 JAILS
 
 On FreeBSD, any process with a JID other than 0 has the jail it is in
@@ -2265,6 +3841,125 @@ which is the lot of what jls reports for one.
 
 The lookup takes a run of jls, which is only done for a process that is
 in a jail, and only once per jail no matter how many PIDs are given.
+
+=head1 CONTAINERS
+
+Linux has no jails, shutting a process away with cgroups and namespaces
+instead, so that is what is shown in their place there.
+
+The cgroup a process is in is shown with the rest of its info, that being
+what names the systemd unit or the container it belongs to. Nothing is
+shown for one left sitting in the root cgroup it started in, such as a
+kernel thread.
+
+    Cgroup /system.slice/postgresql@17-main.service
+
+Every namespace it does not share with PID 1 is shown as well, those
+being what it has been shut away from the rest of the system in. A
+process sharing the lot of them has nothing to say here.
+
+    Namespaces mnt, net, pid, uts
+
+When the cgroup names a container, the runtime that started it is shown
+with the ID after it, in the same manner as the UID and GID. The long
+hash a runtime hands a container is cut down to the first dozen
+characters, which is how everything else prints them.
+
+    Container docker(3f2a1b8c9d4e)
+
+The runtimes below are the ones picked out. Anything else still has its
+cgroup and namespaces shown, just with no name put to it.
+
+    docker
+    podman
+    containerd
+    crio
+    lxc
+    machine      systemd-nspawn and the like
+
+=head2 CGROUP LIMITS
+
+What the cgroup is using of what it is allowed is shown along with it,
+each line being left off when it has nothing to say, be it a limit that
+was never set or a controller that was never turned on for it.
+
+    Cgroup mem      98.304k / 33.554M peak 33.554M
+    Cgroup cpu      quota 0.1, used 26, throttled 2604 for 4:05
+    Cgroup pids     1 / 50
+    Cgroup events   oom_kill 1, oom 1, max 879
+    Cgroup pressure cpu 74.00/77.31, memory 0.15/2.73
+
+All of it covers the whole cgroup rather than the one process, so a unit
+that started a dozen of them reports what the lot are using between
+them. B<Cgroup mem> takes in the page cache on top of the anonymous
+memory as well, so it is not the RSS over again and will read higher than
+it for anything that has been through a pile of files.
+
+The limit is only shown when there is one, B<memory.max> falling back to
+the softer B<memory.high> with B<high> after it. B<Cgroup cpu> is only
+shown for a cgroup that is either capped or being held back, the time it
+has used saying no more than the process table already does otherwise,
+and its quota is the share of a single core it works out to. B<Cgroup
+events> and B<Cgroup pressure> only turn up when something actually
+happened, everything sitting at zero having nothing to report.
+
+None of it is read for a process in the root cgroup, which has nothing of
+its own to report, nor for one whose cgroup can not be found under the
+mount point, that being what a process in a cgroup namespace of its own
+looks like from outside of it. Reading the root for one of those would
+hand back the whole system's numbers as though they belonged to the
+process.
+
+Only the v2 hierarchy is read. A system still running v1 alone has its
+cgroup paths shown as ever, just with none of this alongside them.
+
+=head2 jail_info
+
+B<jail_info> adds a section with every cgroup and namespace in it, the
+ones not shared with PID 1 being called out, followed by the knobs of the
+cgroup itself and what else is sitting in it.
+
+    CONTAINER ARG           VALUE
+    cgroup                  /piddler-test
+    ns:mnt                  4026532643 private
+    ns:net                  4026531833
+    cgroup.controllers      cpuset cpu io memory pids
+    cgroup.procs            1 sh -c while :; do :; done(369709)
+    memory.current          90.112k
+    memory.max              33.554M
+    pids.max                50
+    cpu.max                 10000 100000
+    cpu.stat:nr_throttled   2829
+    memory.events:oom_kill  1
+    cpu.pressure:some       avg10=85.84 avg60=79.75 avg300=47.38
+
+B<cgroup.procs> is everything sitting in the cgroup, gathered up under
+the command each of them is running and capped in the same manner as the
+peers of a endpoint, as per L</peer_max>. B<cgroup.controllers> is what
+says why any of the rest are missing, a knob only being there for a
+controller that was turned on.
+
+The B<memory.stat> lines break B<memory.current> down into where it
+actually went, which is what says how much of a cgroup is its own
+anonymous memory and how much is page cache it has read through, the two
+often being nothing alike.
+
+    memory.current       40.747M
+    memory.stat:anon     3.871M
+    memory.stat:file     29.131M
+    memory.stat:shmem    12.263M
+
+There are a great many of these, so only the handful worth reading
+through are printed, and only the ones with something in them at that.
+B<memory.stat:shmem> is all the tmpfs and shared memory charged to the
+cgroup, which is not the B<Total SHM> shown with the process info, that
+being the shared memory objects the one process has open as per
+L</SHARED MEMORY>.
+
+All of it is read from /proc and the cgroup mount, so there is nothing to
+run for it the way there is for a jail. The namespaces of a process
+belonging to another user are kept from everyone but root, so those go
+unshown when it is not root doing the asking.
 
 =head1 AUTHOR
 
