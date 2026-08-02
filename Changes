@@ -19,6 +19,9 @@ Revision history for Proc-ProcessTable-piddler
         - Remove the unused nextColor method.
         - Strip the padding Linux puts on CPU% and
           guard against inf from a fresh process.
+        - Describe the Info string in the help,
+          requiring Proc::ProcessTable::InfoString
+          0.2.0 for it.
 
 0.2.0   2019-09-04/00:00
         - Add support for the environ key.

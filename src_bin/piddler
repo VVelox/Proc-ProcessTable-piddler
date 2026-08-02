@@ -4,6 +4,7 @@ use strict;
 use warnings;
 use Getopt::Long;
 use Proc::ProcessTable::piddler;
+use Proc::ProcessTable::InfoString qw(proc_infostring_describe);
 
 sub version{
 	print 'piddler v. '.$Proc::ProcessTable::piddler::VERSION."\n";
@@ -34,7 +35,9 @@ sub help{
 -u        Do not show unix sockets.
 -E        Do not resolve pipe, FIFO, unix socket, and SHM peers.
 -H        Do not humanize sizes.
+
 ';
+	print proc_infostring_describe();
 	}
 
 # returns the integer the environmental variable named is set to, falling
