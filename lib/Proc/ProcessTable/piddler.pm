@@ -356,13 +356,6 @@ sub new{
 	}
 
 	my $self = {
-				colors=>[
-						 'BRIGHT_YELLOW',
-						 'BRIGHT_CYAN',
-						 'BRIGHT_MAGENTA',
-						 'BRIGHT_BLUE'
-						 ],
-				nextColor=>0,
 				timeColors=>[
 							 'GREEN',
 							 'BRIGHT_GREEN',
@@ -394,13 +387,11 @@ sub new{
 							  'BRIGHT_BLUE',
 							  'MAGENTA',
 							  'BRIGHT_RED'
-                         ],
+							  ],
 				processColor=>'BRIGHT_RED',
 				varColor=>'GREEN',
 				valColor=>'WHITE',
 				pidColor=>'BRIGHT_CYAN',
-				cpuColor=>'BRIGHT_MAGENTA',
-				memColor=>'BRIGHT_BLUE',
 				zero_time=>1,
 				zero_flt=>1,
 				files=>1,
@@ -430,7 +421,7 @@ sub new{
 				pipe_chain_max=>16,
 				pipe_chain_max_depth=>32,
 				};
-    bless $self;
+	bless $self;
 
 	my @arg_feed=(
 				  'txt', 'pipe', 'unix', 'vregroot', 'dont_dedup', 'dont_resolv',
@@ -500,21 +491,11 @@ sub run{
 	delete( $proc_keys_hash{cmndline} );
 	delete( $proc_keys_hash{size} );
 	delete( $proc_keys_hash{time} );
-	if( defined( $proc_keys_hash{pctmem} ) ){
-		delete( $proc_keys_hash{pctmem} );
-	}
-	if( defined( $proc_keys_hash{groups} ) ){
-		delete( $proc_keys_hash{groups} );
-	}
-	if ( defined( $proc_keys_hash{euid} ) ){
-		delete( $proc_keys_hash{euid} );
-	}
-	if ( defined( $proc_keys_hash{egid} ) ){
-		delete( $proc_keys_hash{egid} );
-	}
-	if ( defined( $proc_keys_hash{cmdline} ) ){
-		delete( $proc_keys_hash{cmdline} );
-	}
+	delete( $proc_keys_hash{pctmem} );
+	delete( $proc_keys_hash{groups} );
+	delete( $proc_keys_hash{euid} );
+	delete( $proc_keys_hash{egid} );
+	delete( $proc_keys_hash{cmdline} );
 	@proc_keys=sort(keys( %proc_keys_hash ));
 
 	my @procs;
@@ -525,7 +506,7 @@ sub run{
 	}
 
 	if (!defined( $procs[0] )){
-		return ''
+		return '';
 	}
 
 	# the endpoints are only good for as long as the processes holding
@@ -581,12 +562,12 @@ sub run{
 	my $toReturn='';
 	my $first=1;
 	foreach my $proc ( @procs ){
-        my $tb = Text::ANSITable->new;
-        $tb->border_style('Default::none_ascii');
-        $tb->color_theme('Default::no_color');
+		my $tb = Text::ANSITable->new;
+		$tb->border_style('Default::none_ascii');
+		$tb->color_theme('Default::no_color');
 		$tb->show_header(0);
-        $tb->set_column_style(0, pad => 0);
-        $tb->set_column_style(1, pad => 1);
+		$tb->set_column_style(0, pad => 0);
+		$tb->set_column_style(1, pad => 1);
 		$tb->columns( ['var','val'] );
 
 		#
@@ -1011,9 +992,11 @@ sub run{
 
 				my $size_string=$self->_sizeString( $file );
 
-				# noted here as the deduping is finalized from the rendered
-				# rows, which have no type left on them beyond what is printed,
-				# and a shared memory object is a REG like any other on Linux
+				# Noted here as the deduping is finalized from the rendered
+				# rows, so what it needs rides along raw rather than being
+				# fished back out from under the color codes. A shared memory
+				# object is a REG like any other on Linux, so the name has to
+				# be asked about while it is still to hand.
 				my $is_shm=$self->_isShm( $file );
 
 				if (
@@ -1026,45 +1009,20 @@ sub run{
 						# nothing to tell them apart but their size and what
 						# else holds them, which are worth a single line and
 						# a count of the rest
-						if (! defined( $shm_alike{ $size_string."\0".$name } ) ) {
-							$shm_alike{ $size_string."\0".$name } = 1;
-						} else {
-							$shm_alike{ $size_string."\0".$name }++;
-						}
-					}elsif (
-						( $type =~ /[Vv][Rr][Ee][Gg]/ ) ||
-						( $type =~ /[Rr][Ee][Gg]/ ) ||
-						( $type =~ /[Vv][Dd][Ii][Dd]/ ) ||
-						( $type =~ /[Vv][Cc][Hh][Rr]/ )
-						) {
+						$shm_alike{ $size_string."\0".$name }++;
+					}elsif ( $self->_isDedupType( $type ) ) {
 						if (
 							( $fd =~ /u/ ) ||
 							( $fd =~ /rw/ ) ||
 							( $fd =~ /wr/ )
 							) {
-							if (! defined( $rw_filehandles{ $name } ) ) {
-								$rw_filehandles{ $name } = 1;
-							} else {
-								$rw_filehandles{ $name }++;
-							}
+							$rw_filehandles{ $name }++;
 						} elsif ( $fd =~ /r/ ) {
-							if (! defined( $r_filehandles{ $name } ) ) {
-								$r_filehandles{ $name } = 1;
-							} else {
-								$r_filehandles{ $name }++;
-							}
+							$r_filehandles{ $name }++;
 						} elsif ( $fd =~ /w/ ) {
-							if (! defined( $w_filehandles{ $name } ) ) {
-								$w_filehandles{ $name } = 1;
-							} else {
-								$w_filehandles{ $name }++;
-							}
+							$w_filehandles{ $name }++;
 						}else{
-							if (! defined( $mem_filehandles{ $name } ) ) {
-								$mem_filehandles{ $name } = 1;
-							} else {
-								$mem_filehandles{ $name }++;
-							}
+							$mem_filehandles{ $name }++;
 						}
 					}
 				}
@@ -1078,6 +1036,8 @@ sub run{
 								   color( $self->{file_colors}[4] ).$node.color( 'reset' ),
 								   $name,
 								   $is_shm,
+								   $fd,
+								   $self->_isDedupType( $type ),
 								   ]);
 				}
 			}
@@ -1103,17 +1063,12 @@ sub run{
 							}
 							push( @final_fdata, [ @{ $line }[ 0 .. 5 ] ] );
 						}
-					}elsif (
-						( $line->[1] =~ /[Vv][Rr][Ee][Gg]/ ) ||
-						( $line->[1] =~ /[Rr][Ee][Gg]/ ) ||
-						( $line->[1] =~ /[Vv][Dd][Ii][Dd]/ ) ||
-						( $line->[1] =~ /[Vv][Cc][Hh][Rr]/ )
-						){
+					}elsif ( $line->[8] ){
 						my $add_line=1;
 						if (
-							( $line->[0] =~ /u/ ) ||
-							( $line->[0] =~ /rw/ ) ||
-							( $line->[0] =~ /wr/ )
+							( $line->[7] =~ /u/ ) ||
+							( $line->[7] =~ /rw/ ) ||
+							( $line->[7] =~ /wr/ )
 							) {
 							if( defined( $rw_dedup{ $line->[5] } ) ){
 								$add_line=0;
@@ -1123,7 +1078,7 @@ sub run{
 								}
 								$rw_dedup{ $line->[5] } = 1;
 							}
-						} elsif ( $line->[0] =~ /r/ ) {
+						} elsif ( $line->[7] =~ /r/ ) {
 							if( defined( $r_dedup{ $line->[5] } ) ){
 								$add_line=0;
 							}else{
@@ -1132,7 +1087,7 @@ sub run{
 								}
 								$r_dedup{ $line->[5] } = 1;
 							}
-						} elsif ( $line->[0] =~ /w/ ) {
+						} elsif ( $line->[7] =~ /w/ ) {
 							if( defined( $w_dedup{ $line->[5] } ) ){
 								$add_line=0;
 							}else{
@@ -1161,8 +1116,8 @@ sub run{
 				}
 				$ftb->add_rows( \@final_fdata );
 			}else{
-				# the shared memory marker is only ever of use to the deduping,
-				# so it is never handed to the table
+				# the raw values riding along past the name are only ever of
+				# use to the deduping, so they are never handed to the table
 				foreach my $line ( @fdata ){
 					push( @final_fdata, [ @{ $line }[ 0 .. 5 ] ] );
 				}
@@ -3087,11 +3042,6 @@ sub _procMem{
 		$mem=$mem + 2**32;
 	}
 
-	# past 4G there is nothing left to work with
-	if ( $mem < 0 ){
-		return 0;
-	}
-
 	return $mem;
 }
 
@@ -3162,6 +3112,26 @@ sub _isShm{
 		 ( $file->{match_name} =~ /^\/SYSV/ ) ||
 		 ( $file->{match_name} =~ /^\/memfd:/ )
 		 )
+		){
+		return 1;
+	}
+
+	return 0;
+}
+
+#
+# Returns true if the type from _lsof is one the FD deduping applies to,
+# which is the regular files and the devices sitting on a path.
+#
+sub _isDedupType{
+	my $self=$_[0];
+	my $type=$_[1];
+
+	if (
+		( $type =~ /[Vv][Rr][Ee][Gg]/ ) ||
+		( $type =~ /[Rr][Ee][Gg]/ ) ||
+		( $type =~ /[Vv][Dd][Ii][Dd]/ ) ||
+		( $type =~ /[Vv][Cc][Hh][Rr]/ )
 		){
 		return 1;
 	}
@@ -3882,7 +3852,7 @@ sub timeString{
 		$time=0;
 	}
 
-	if ( $^O =~ /^linux$/ ) {
+	if ( $^O =~ /linux/ ) {
 		$time=$time/1000000;
 	}
 
@@ -3942,11 +3912,11 @@ sub memString{
 
 	my $toReturn='';
 
-	if ( $mem < '10000' ) {
+	if ( $mem < 10000 ) {
 		$toReturn=color( $self->{$type.'Colors'}[0] ).$mem;
 	} elsif (
-			 ( $mem >= '10000' ) &&
-			 ( $mem < '1000000' )
+			 ( $mem >= 10000 ) &&
+			 ( $mem < 1000000 )
 			 ) {
 		$mem=$mem/1000;
 		$mem=sprintf('%.3f', $mem);
@@ -3954,8 +3924,8 @@ sub memString{
 		$toReturn=color( $self->{$type.'Colors'}[0] ).$mem.
 		color( $self->{$type.'Colors'}[3] ).'k';
 	} elsif (
-			 ( $mem >= '1000000' ) &&
-			 ( $mem < '1000000000' )
+			 ( $mem >= 1000000 ) &&
+			 ( $mem < 1000000000 )
 			 ) {
 		$mem=($mem/1000)/1000;
 		$mem=sprintf('%.3f', $mem);
@@ -3963,7 +3933,7 @@ sub memString{
 
 		$toReturn=color( $self->{$type.'Colors'}[1] ).$mem_split[0].'.'.color( $self->{$type.'Colors'}[0] ).$mem_split[1].
 		color( $self->{$type.'Colors'}[3] ).'M';
-	} elsif ( $mem >= '1000000000' ) {
+	} elsif ( $mem >= 1000000000 ) {
 		$mem=(($mem/1000)/1000)/1000;
 		$mem=sprintf('%.3f', $mem);
 		my @mem_split=split(/\./, $mem);
@@ -4007,29 +3977,6 @@ sub startString{
 
 	#just return this for anything less
 	return sprintf('%02d', $hour).':'.sprintf('%02d', $min);
-}
-
-=head2 nextColor
-
-Returns the next color.
-
-=cut
-
-sub nextColor{
-	my $self=$_[0];
-
-	my $color;
-
-	if ( defined( $self->{colors}[ $self->{nextColor} ] ) ) {
-		$color=$self->{colors}[ $self->{nextColor} ];
-		$self->{nextColor}++;
-	} else {
-		$self->{nextColor}=0;
-		$color=$self->{colors}[ $self->{nextColor} ];
-		$self->{nextColor}++;
-	}
-
-	return $color;
 }
 
 =head1 SHARED MEMORY

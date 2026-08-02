@@ -6,8 +6,8 @@ use Getopt::Long;
 use Proc::ProcessTable::piddler;
 
 sub version{
-        print "piddler v. 0.3.0\n";
-	}
+	print 'piddler v. '.$Proc::ProcessTable::piddler::VERSION."\n";
+}
 
 sub help{
         print '
@@ -26,7 +26,8 @@ sub help{
 -l <int>  Max command length in a pipe chain. 0 or less does not truncate. Default is 0.
 -m        Show memory mapped libraries of the REG type.
 -n        Do not resolve PTR addresses.
---nc      Disable color.
+--nc      Disable color. The double dash matters, -nc being taken
+          for -n -c.
 -p        Do not show anonymous pipes.
 -r        Show VREG / files.
 -t        Show shared libraries.
@@ -112,7 +113,7 @@ if ( $help ){
 	exit;
 }
 
-# real in the list of PIDs
+# read in the list of PIDs
 my @PIDs;
 foreach my $arg ( @ARGV ){
 	my @possibles=split(/\,/, $arg);
@@ -296,7 +297,10 @@ Do not resolve PTR addresses
 
 =head2 --nc
 
-Disable color..
+Disable color.
+
+The double dash matters here. Flag bundling is on for the single
+character flags, so B<-nc> is taken for B<-n> B<-c> rather than this.
 
 =head2 -p
 
@@ -309,7 +313,7 @@ the two apart there.
 
 =head2 -r
 
-Show show VREG / files.
+Show VREG / files.
 
 =head2 -t
 
