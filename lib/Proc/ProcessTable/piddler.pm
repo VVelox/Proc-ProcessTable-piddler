@@ -256,11 +256,13 @@ that can not be looked up, such as one belonging to another user when not
 running as root, is shown as a ?. A process may sit on more than one
 pipe, so at most 16 lines are shown for any one of them.
 
-Only a pipe with the one process writing and the one reading is a link in
-a pipeline, that being what a shell makes when it strings two commands
-together. Two processes each running a pipe at the other are talking both
-ways, which is the one channel between them rather than two pipelines
-pointed opposite ways.
+A pipe is a link in a pipeline where a process that was handed it is
+writing at the one end and another is reading at the other, that being
+what a shell makes when it strings two commands together. More than one
+of them on a end, such as a log a whole pack of workers writes to, is a
+link apiece rather than the one. Two processes each running a pipe at the
+other are talking both ways, which is the one channel between them rather
+than two pipelines pointed opposite ways.
 
     firefox(7375) <-> firefox -contentproc...(24844)
 
@@ -275,7 +277,10 @@ A process forked off of one already holding a pipe is handed a copy of it
 whether it has any use for it or not, and a pool that forks a worker at a
 time ends up with every worker holding a end of every pipe made before
 it. Those are printed as B<inherited> so they are not taken for something
-that was given the pipe to use.
+that was given the pipe to use. A end sitting on stdin, stdout, or stderr
+counts as given either way, a shell wiring the last command of a pipeline
+onto the very descriptor it is holding the pipe on itself, so leaving
+those to the parent would break the chain a hop early.
 
 Tying the two ends of a pipe together requires a system wide lsof, so it
 is only run for processes that actually have a pipe open, and only once
@@ -1601,7 +1606,8 @@ sub _pipeHolders{
 		return $self->{pipe_holders};
 	}
 
-	my %holders;
+	my @pipes;
+	my %votes;
 	foreach my $file ( @{ $self->_allFiles } ){
 		if ( ! $self->_isPipe( $file ) ){
 			next;
@@ -1617,6 +1623,68 @@ sub _pipeHolders{
 		}
 
 		my $direction=$self->_pipeDirection( $file );
+		if ( $direction !~ /^$/ ){
+			$votes{ $ids->{id} }{$direction}=1;
+		}
+
+		push( @pipes, {
+					   file=>$file,
+					   ids=>$ids,
+					   direction=>$direction,
+					   } );
+	}
+
+	# Systems such as FreeBSD hand each end of a pipe a object of its own,
+	# where every descriptor pointing at the one object is that same end of
+	# it, so a end told by a descriptor in the one process says which way
+	# round it is in every other. The far end goes the other way, which is
+	# what puts a direction on the ends only ever held on a descriptor
+	# there is nothing to be read off of, such as the stdin, stdout, and
+	# stderr a supervisor keeps of what it started. None of this holds
+	# where both ends share the one object, as they do on Linux, and a
+	# object with descriptors going both ways is left to be told the one at
+	# a time.
+	my %resolved;
+	foreach my $pipe ( @pipes ){
+		my $id=$pipe->{ids}{id};
+		my $peer_id=$pipe->{ids}{peer_id};
+		if (
+			( defined( $resolved{$id} ) ) ||
+			( $id eq $peer_id )
+			){
+			next;
+		}
+
+		my $own=$self->_pipeVote( \%votes, $id );
+		if ( defined( $own ) ){
+			$resolved{$id}=$own;
+			next;
+		}
+
+		# nothing to be had off of this end, so the far end says it instead
+		my $peer=$self->_pipeVote( \%votes, $peer_id );
+		if ( !defined( $peer ) ){
+			next;
+		}
+		if ( $peer eq 'w' ){
+			$resolved{$id}='r';
+		}else{
+			$resolved{$id}='w';
+		}
+	}
+
+	my %holders;
+	foreach my $pipe ( @pipes ){
+		my $file=$pipe->{file};
+		my $ids=$pipe->{ids};
+
+		my $direction=$pipe->{direction};
+		if (
+			( $direction =~ /^$/ ) &&
+			( defined( $resolved{ $ids->{id} } ) )
+			){
+			$direction=$resolved{ $ids->{id} };
+		}
 		if ( $direction =~ /^$/ ){
 			next;
 		}
@@ -1626,12 +1694,60 @@ sub _pipeHolders{
 		# Sorting the pair puts either end of one under the same key on both.
 		my $key=join( "\0", sort ( $ids->{id}, $ids->{peer_id} ) );
 
-		$holders{$key}{$direction}{ $file->{pid} }=1;
+		# A end sitting on stdin, stdout, or stderr was wired there for the
+		# process to use, that being what a shell does when it strings two
+		# commands together, where one on a higher descriptor is as like as
+		# not just a copy it was forked holding. A process may hold the same
+		# end on more than one descriptor, so any one of them being a
+		# standard one is enough.
+		my $stdio=0;
+		if ( $file->{fd} =~ /^[0-2][^0-9]*$/ ){
+			$stdio=1;
+		}
+		if (
+			( !defined( $holders{$key}{$direction}{ $file->{pid} } ) ) ||
+			( $stdio )
+			){
+			$holders{$key}{$direction}{ $file->{pid} }=$stdio;
+		}
 	}
 
 	$self->{pipe_holders}=\%holders;
 
 	return $self->{pipe_holders};
+}
+
+#
+# Returns which way round the descriptors pointing at a pipe end went, as
+# gathered by _pipeHolders, or undef where nothing was said of it or the
+# descriptors did not agree.
+#
+sub _pipeVote{
+	my $self=$_[0];
+	my $votes=$_[1];
+	my $id=$_[2];
+
+	# checked before anything reaches for a direction, as looking one up
+	# would bring the end into being with nothing to it
+	if ( !defined( $votes->{$id} ) ){
+		return undef;
+	}
+
+	if (
+		( defined( $votes->{$id}{r} ) ) &&
+		( !defined( $votes->{$id}{w} ) )
+		){
+		return 'r';
+	}
+
+	if (
+		( defined( $votes->{$id}{w} ) ) &&
+		( !defined( $votes->{$id}{r} ) )
+		){
+		return 'w';
+	}
+
+	return undef;
 }
 
 #
@@ -1658,10 +1774,16 @@ sub _pipeEnd{
 	}
 
 	foreach my $pid ( sort { $a <=> $b } keys %{ $holders->{$key}{$direction} } ){
+		# A process holding the end on a standard descriptor was handed it to
+		# use whether its parent still has it or not, the last command in a
+		# pipeline being forked off of a shell that is sitting on the very
+		# same end, so only the ones on a higher descriptor are taken for a
+		# copy that came along with the fork.
 		my $ppid=$self->{ppids}{$pid};
 		if (
 			( defined( $ppid ) ) &&
-			( defined( $holders->{$key}{$direction}{$ppid} ) )
+			( defined( $holders->{$key}{$direction}{$ppid} ) ) &&
+			( ! $holders->{$key}{$direction}{$pid} )
 			){
 			push( @inherited, $pid );
 		}else{
@@ -3361,15 +3483,32 @@ sub _pipeChains{
 		my $writers=$self->_pipeEnd( $holders, $key, 'w' );
 		my $readers=$self->_pipeEnd( $holders, $key, 'r' );
 
-		# a plain link, which is what a pipeline is built out of
+		# A plain link, which is what a pipeline is built out of. A pipe a
+		# whole pool was forked holding has the one process that was given
+		# it at either end, the rest being copies that came along with the
+		# fork, but a log a pack of workers all write to really does have
+		# every one of them on it, so each is a link of its own rather than
+		# only the one pair being taken.
 		if (
-			( $#{ $writers->{own} } == 0 ) &&
-			( $#{ $readers->{own} } == 0 ) &&
-			( $writers->{own}[0] ne $readers->{own}[0] )
+			( defined( $writers->{own}[0] ) ) &&
+			( defined( $readers->{own}[0] ) )
 			){
-			$forward{ $writers->{own}[0] }{ $readers->{own}[0] }=1;
-			$backward{ $readers->{own}[0] }{ $writers->{own}[0] }=1;
-			next;
+			my $linked=0;
+			foreach my $writer ( @{ $writers->{own} } ){
+				foreach my $reader ( @{ $readers->{own} } ){
+					# a process on both ends of the one pipe is talking to
+					# itself, which is no link at all
+					if ( $writer eq $reader ){
+						next;
+					}
+					$linked=1;
+					$forward{$writer}{$reader}=1;
+					$backward{$reader}{$writer}=1;
+				}
+			}
+			if ( $linked ){
+				next;
+			}
 		}
 
 		# anything else only gets a line of its own when the process being
