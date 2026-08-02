@@ -1,6 +1,6 @@
 Revision history for Proc-ProcessTable-piddler
 
-0.3.0   2026-08-01/11:30
+0.3.0   2026-08-02/15:45
         - Add pipe chains, shown by default.
         - Show what holds the far end of pipes,
           FIFOs, unix sockets, and SHM.
