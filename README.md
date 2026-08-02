@@ -13,7 +13,7 @@ Display all process table, open files, and network connections for a PID.
 -e <int>  Max number of peers to show. 0 or less shows all. Default is 0.
 -f        Do not show FIFOs.
 -j        Show all the jail info for the jail the process is in.
--l <int>  Max command length in a pipe chain. 0 or less does not truncate. Default is 40.
+-l <int>  Max command length in a pipe chain. 0 or less does not truncate. Default is 0.
 -m        Show memory mapped libraries of the REG type.
 -n        Do not resolve PTR addresses.
 --nc      Disable color.

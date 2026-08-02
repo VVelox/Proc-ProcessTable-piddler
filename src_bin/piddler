@@ -23,7 +23,7 @@ sub help{
 -e <int>  Max number of peers to show. 0 or less shows all. Default is 0.
 -f        Do not show FIFOs.
 -j        Show all the jail info for the jail the process is in.
--l <int>  Max command length in a pipe chain. 0 or less does not truncate. Default is 40.
+-l <int>  Max command length in a pipe chain. 0 or less does not truncate. Default is 0.
 -m        Show memory mapped libraries of the REG type.
 -n        Do not resolve PTR addresses.
 --nc      Disable color.
@@ -183,7 +183,7 @@ if ( !defined( $peer_max ) ){
 	$peer_max=&integer_from_env( 'PIDDLER_peer_max', 0 );
 }
 if ( !defined( $pipe_chain_command_length ) ){
-	$pipe_chain_command_length=&integer_from_env( 'PIDDLER_pipe_chain_command_length', 40 );
+	$pipe_chain_command_length=&integer_from_env( 'PIDDLER_pipe_chain_command_length', 0 );
 }
 # same for the no color, which per the NO_COLOR spec is any non-empty value
 if (
@@ -281,7 +281,7 @@ Zero or less does not truncate at all.
 Only the pipe chains are touched, the commands shown for the far end of
 a endpoint having a length of their own.
 
-Defaults to 40.
+Defaults to 0, not truncating at all.
 
 =head2 -m
 

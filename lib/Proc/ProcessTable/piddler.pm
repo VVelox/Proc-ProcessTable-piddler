@@ -224,7 +224,7 @@ Zero or less does not truncate at all.
 Only the pipe chains are touched, the commands shown for the far end of
 a endpoint having a length of their own.
 
-Defaults to 40.
+Defaults to 0, not truncating at all.
 
 =head4 pipe_chains
 
@@ -348,7 +348,7 @@ sub new{
 				human_size=>1,
 				peer_command_length=>40,
 				peer_max=>0,
-				pipe_chain_command_length=>40,
+				pipe_chain_command_length=>0,
 				pipe_chain_max=>16,
 				pipe_chain_max_depth=>32,
 				};
