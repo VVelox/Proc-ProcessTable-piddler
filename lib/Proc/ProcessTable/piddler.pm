@@ -633,9 +633,19 @@ sub run{
 		#
 		# PCT CPU
 		#
+		# Linux pads the value out with leading spaces, and a freshly
+		# started process may come back as inf or nan there, so it is
+		# rebuilt rather than used as handed over.
+		my $pctcpu=$proc->pctcpu;
+		if (
+			( !defined( $pctcpu ) ) ||
+			( $pctcpu !~ /^\s*[0-9]*\.?[0-9]+\s*$/ )
+			){
+			$pctcpu=0;
+		}
 		push( @data, [
 					  color( $self->{varColor} ).'CPU%'.color('reset'),
-					  color( $self->{valColor} ).$proc->pctcpu.color('reset')
+					  color( $self->{valColor} ).sprintf( '%.2f', $pctcpu ).color('reset')
 					  ]);
 
 		#

@@ -17,6 +17,8 @@ Revision history for Proc-ProcessTable-piddler
           there are no connections.
         - Internal cleanup and documentation fixes.
         - Remove the unused nextColor method.
+        - Strip the padding Linux puts on CPU% and
+          guard against inf from a fresh process.
 
 0.2.0   2019-09-04/00:00
         - Add support for the environ key.
