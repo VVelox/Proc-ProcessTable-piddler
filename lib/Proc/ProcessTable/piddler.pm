@@ -134,6 +134,23 @@ The following are used to match libraries.
 
 Defaults to 0, false.
 
+=head4 peer_max
+
+How many commands to print for the far end of a pipe, FIFO, unix socket,
+or shared memory object and how many PIDs to print for any one of those
+commands.
+
+A endpoint may be held by any number of other processes, such as a shared
+memory object inherited across a pile of forks, so this is what keeps
+that from being more than is worth reading through. Whatever is left off
+is noted as a count.
+
+    17u SHM 288876 0 (firefox -contentproc...(7375, 24844, + 26 more))
+
+Zero or less prints all of them.
+
+Defaults to 0, printing all of them.
+
 =head4 peers
 
 For each pipe, FIFO, unix socket, and shared memory object printed, show
@@ -160,8 +177,8 @@ listening or a FIFO no one else has open.
 
 A endpoint may be held by any number of other processes, such as a shared
 memory object inherited across a pile of forks, so the PIDs are gathered
-up under the command they are running and at most 8 commands and 8 PIDs
-per command are printed, with the rest noted as a count.
+up under the command they are running, with B<peer_max> capping how many
+of each are printed.
 
 Tying the two ends together requires a system wide lsof, so it is only
 run when a pipe, FIFO, unix socket, or shared memory object is actually
@@ -298,7 +315,7 @@ sub new{
 				peers=>1,
 				human_size=>1,
 				peer_command_length=>40,
-				peer_max=>8,
+				peer_max=>0,
 				pipe_chain_max=>16,
 				pipe_chain_max_depth=>32,
 				};
@@ -307,7 +324,7 @@ sub new{
 	my @arg_feed=(
 				  'txt', 'pipe', 'unix', 'vregroot', 'dont_dedup', 'dont_resolv',
 				  'fifo', 'a_inode', 'memreglib', 'pipe_chains', 'peers',
-				  'human_size'
+				  'human_size', 'peer_max'
 				   );
 
 	foreach my $feed ( @arg_feed ){
@@ -1602,8 +1619,9 @@ sub _peerCommands{
 	# processes, which for the most part are copies of each other, so the
 	# PIDs are gathered up under the command they are running rather than
 	# printing that over and over. Both how many commands are printed and
-	# how many PIDs are printed for any one of them are capped, as even
-	# grouped up it may be more than is worth reading through.
+	# how many PIDs are printed for any one of them are capped via
+	# peer_max, as even grouped up it may be more than is worth reading
+	# through, with zero or less printing all of them.
 	my %groups;
 	my @order;
 	foreach my $peer_pid ( sort { $a <=> $b } @peer_pids ){
@@ -1616,7 +1634,10 @@ sub _peerCommands{
 	}
 
 	my $more_commands=0;
-	if ( $#order >= $self->{peer_max} ){
+	if (
+		( $self->{peer_max} > 0 ) &&
+		( $#order >= $self->{peer_max} )
+		){
 		$more_commands=$#order + 1 - $self->{peer_max};
 		@order=@order[ 0 .. $self->{peer_max} - 1 ];
 	}
@@ -1626,7 +1647,10 @@ sub _peerCommands{
 		my @group_pids=@{ $groups{$command} };
 
 		my $more_pids=0;
-		if ( $#group_pids >= $self->{peer_max} ){
+		if (
+			( $self->{peer_max} > 0 ) &&
+			( $#group_pids >= $self->{peer_max} )
+			){
 			$more_pids=$#group_pids + 1 - $self->{peer_max};
 			@group_pids=@group_pids[ 0 .. $self->{peer_max} - 1 ];
 		}

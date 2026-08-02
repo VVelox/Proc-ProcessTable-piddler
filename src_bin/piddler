@@ -20,6 +20,7 @@ sub help{
 -a        Show a_inodes.
 -c        Do not show pipe chains.
 -d        Do not dedup.
+-e <int>  Max number of peers to show. 0 or less shows all. Default is 0.
 -f        Do not show FIFOs.
 -m        Show memory mapped libraries of the REG type.
 -n        Do not resolve PTR addresses.
@@ -49,6 +50,8 @@ my $memreglib=0;
 my $dont_pipe_chains=0;
 my $dont_peers=0;
 my $dont_human_size=0;
+# left undefined so the environmental variable may be told apart from the flag
+my $peer_max;
 
 # get the commandline options
 Getopt::Long::Configure ('no_ignore_case');
@@ -62,6 +65,7 @@ GetOptions(
 		   'p' => \$dont_pipe,
 		   'u' => \$dont_unix,
 		   'E' => \$dont_peers,
+		   'e=i' => \$peer_max,
 		   'H' => \$dont_human_size,
 		   'r' => \$vregroot,
 		   'd' => \$dont_dedup,
@@ -146,6 +150,17 @@ if ( defined( $ENV{PIDDLER_dont_human_size} ) ){
 if ( defined( $ENV{PIDDLER_dont_resolv} ) ){
 	$dont_resolv = $dont_resolv ^ ( $ENV{PIDDLER_dont_resolv} ? 1 : 0 );
 }
+# -e is a value rather than a toggle, so the environmental variable just
+# sets the default for it, which passing the flag overrides
+if ( !defined( $peer_max ) ){
+	$peer_max=0;
+	if ( defined( $ENV{PIDDLER_peer_max} ) ){
+		if ( $ENV{PIDDLER_peer_max} !~ /^\-?[0-9]+$/ ){
+			die 'PIDDLER_peer_max is set to "'.$ENV{PIDDLER_peer_max}.'", which is not a integer'."\n";
+		}
+		$peer_max=$ENV{PIDDLER_peer_max};
+	}
+}
 # same for the no color, which per the NO_COLOR spec is any non-empty value
 if (
 	( defined( $ENV{NO_COLOR} ) ) &&
@@ -176,6 +191,7 @@ my $ppp=Proc::ProcessTable::piddler->new(
 										  memreglib=>$memreglib,
 										  pipe_chains=>( $dont_pipe_chains ? 0 : 1 ),
 										  peers=>( $dont_peers ? 0 : 1 ),
+										  peer_max=>$peer_max,
 										  human_size=>( $dont_human_size ? 0 : 1 ),
 										  }
 										 );
@@ -189,7 +205,7 @@ piddler - Display all process table, open files, and network connections for a P
 
 =head1 SYNOPSIS
 
-piddler [B<-a>] [B<-c>] [B<-d>] [B<-f>] [B<-m>] [B<-n>] [B<--nc>] [B<-p>] [B<-r>] [B<-t>] [B<-u>] [B<-E>] [B<-H>] <PID>[,<PID>...]
+piddler [B<-a>] [B<-c>] [B<-d>] [B<-e> <int>] [B<-f>] [B<-m>] [B<-n>] [B<--nc>] [B<-p>] [B<-r>] [B<-t>] [B<-u>] [B<-E>] [B<-H>] <PID>[,<PID>...]
 
 piddler [B<-h>|B<--help>]
 
@@ -208,6 +224,16 @@ Do not show pipe chains.
 =head2 -d
 
 Do not dedup.
+
+=head2 -e <int>
+
+How many commands to show for the far end of a pipe, FIFO, unix socket,
+or shared memory object and how many PIDs to show for any one of those
+commands, with whatever is left off noted as a count.
+
+Zero or less shows all of them.
+
+Defaults to 0, showing all of them.
 
 =head2 -f
 
@@ -255,6 +281,10 @@ These are used for XORing the corresponding flags. So setting
 one to 1 has the same effect as passing the flag, and passing
 the flag as well XORs it back off.
 
+The exception is B<PIDDLER_peer_max>, which takes a value rather
+than being a toggle, so it just sets the default for the flag
+it belongs to and passing that flag overrides it.
+
 =head2 NO_COLOR
 
 If set to a non-empty value, color will be disabled, the same
@@ -294,6 +324,11 @@ If set to 1, unix sockets will not be shown, the same as B<-u>.
 
 If set to 1, pipe, FIFO, unix socket, and SHM peers will not
 be resolved, the same as B<-E>.
+
+=head2 PIDDLER_peer_max
+
+Sets how many peers will be shown, the same as B<-e>, which
+overrides it when passed.
 
 =head2 PIDDLER_dont_human_size
 
@@ -365,8 +400,8 @@ listening or a FIFO no one else has open.
 
 A endpoint may be held by any number of other processes, such as a shared
 memory object inherited across a pile of forks, so the PIDs are gathered
-up under the command they are running and at most 8 commands and 8 PIDs
-per command are printed, with the rest noted as a count.
+up under the command they are running, with B<-e> capping how many of
+each are printed.
 
 Tying the two ends together requires a system wide lsof, which is only
 done when a pipe, FIFO, unix socket, or shared memory object is actually

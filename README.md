@@ -10,6 +10,7 @@ Display all process table, open files, and network connections for a PID.
 -a        Show a_inodes.
 -c        Do not show pipe chains.
 -d        Do not dedup.
+-e <int>  Max number of peers to show. 0 or less shows all. Default is 0.
 -f        Do not show FIFOs.
 -m        Show memory mapped libraries of the REG type.
 -n        Do not resolve PTR addresses.
@@ -27,7 +28,9 @@ Display all process table, open files, and network connections for a PID.
 The enviromental variables below may be set to set the default for the
 flag in question.
 
-Unless set to defined ands set to 1, these will default to 0.
+Unless set to defined ands set to 1, these will default to 0. The
+exception is PIDDLER_peer_max, which takes a value rather than being a
+toggle.
 
 | Variable |  Description  |
 | -------- | ---------------- |
@@ -42,6 +45,7 @@ Unless set to defined ands set to 1, these will default to 0.
 | PIDDLER_txt | If set to 1, libraries with the TXT type will not be shown. |
 | PIDDLER_dont_unix | If set to 1, unix sockets will not be shown. |
 | PIDDLER_dont_peers | If set to 1, pipe, FIFO, unix socket, and SHM peers will not be resolved. |
+| PIDDLER_peer_max | Sets how many peers will be shown, the same as -e, which overrides it when passed. |
 | PIDDLER_dont_human_size | If set to 1, sizes will be printed as the raw number of bytes. |
 | PIDDLER_vregroot | If set to 1, VREG / will not be shown. |
 
