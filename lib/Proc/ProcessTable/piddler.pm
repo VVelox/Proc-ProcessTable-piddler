@@ -212,6 +212,20 @@ Print pipes.
 
 Defaults to 1, true.
 
+=head4 pipe_chain_command_length
+
+How long a command may be in a pipe chain before it is truncated, with
+B<...> tacked onto the end of it to show that it was.
+
+    ps auxw(4821) | grep -i --line-buffered --color=auto...(4822)
+
+Zero or less does not truncate at all.
+
+Only the pipe chains are touched, the commands shown for the far end of
+a endpoint having a length of their own.
+
+Defaults to 40.
+
 =head4 pipe_chains
 
 Print the pipelines the process is a part of, showing the commands in
@@ -220,10 +234,10 @@ the order the data flows through them, oldest to newest.
     PIPE CHAINS
     ps auxw(4821) | grep foo(4822) | wc -l(4823)
 
-Commands longer than 40 characters are truncated. Any process that can
-not be looked up, such as one belonging to another user when not running
-as root, is shown as a ?. A process may sit on more than one pipe, so at
-most 16 chains are shown for any one of them.
+Commands are truncated as per B<pipe_chain_command_length>. Any process
+that can not be looked up, such as one belonging to another user when not
+running as root, is shown as a ?. A process may sit on more than one
+pipe, so at most 16 chains are shown for any one of them.
 
 Tying the two ends of a pipe together requires a system wide lsof, so it
 is only run for processes that actually have a pipe open, and only once
@@ -334,6 +348,7 @@ sub new{
 				human_size=>1,
 				peer_command_length=>40,
 				peer_max=>0,
+				pipe_chain_command_length=>40,
 				pipe_chain_max=>16,
 				pipe_chain_max_depth=>32,
 				};
@@ -342,7 +357,8 @@ sub new{
 	my @arg_feed=(
 				  'txt', 'pipe', 'unix', 'vregroot', 'dont_dedup', 'dont_resolv',
 				  'fifo', 'a_inode', 'memreglib', 'pipe_chains', 'peers',
-				  'human_size', 'peer_max', 'jail_info'
+				  'human_size', 'peer_max', 'jail_info',
+				  'pipe_chain_command_length'
 				   );
 
 	foreach my $feed ( @arg_feed ){
@@ -1829,7 +1845,7 @@ sub _peerCommands{
 	my %groups;
 	my @order;
 	foreach my $peer_pid ( sort { $a <=> $b } @peer_pids ){
-		my $command=$self->_peerCommandName( $peer_pid, $commands );
+		my $command=$self->_peerCommandName( $peer_pid, $commands, $self->{peer_command_length} );
 		if ( !defined( $groups{$command} ) ){
 			$groups{$command}=[];
 			push( @order, $command );
@@ -1976,28 +1992,34 @@ sub _pipeChains{
 
 #
 # Renders the command used for a PID on the far end of a endpoint,
-# truncating it as needed. A ? is used for any process that can't be
+# truncating it to the length passed to it, which does not happen at all
+# for a length of zero or less. A ? is used for any process that can't be
 # looked up.
 #
 sub _peerCommandName{
 	my $self=$_[0];
 	my $pid=$_[1];
 	my $commands=$_[2];
+	my $length=$_[3];
 
 	my $command='?';
 	if ( defined( $commands->{$pid} ) ){
 		$command=$commands->{$pid};
 	}
 
-	if ( length( $command ) > $self->{peer_command_length} ){
-		$command=substr( $command, 0, $self->{peer_command_length} ).'...';
+	if (
+		( $length > 0 ) &&
+		( length( $command ) > $length )
+		){
+		$command=substr( $command, 0, $length ).'...';
 	}
 
 	return $command;
 }
 
 #
-# The same as _peerCommandName, with the PID it belongs to tacked onto
+# The same as _peerCommandName for a PID in a pipe chain, which has a
+# truncation length of its own, with the PID it belongs to tacked onto
 # the end of it.
 #
 sub _peerCommand{
@@ -2005,7 +2027,7 @@ sub _peerCommand{
 	my $pid=$_[1];
 	my $commands=$_[2];
 
-	return $self->_peerCommandName( $pid, $commands ).'('.$pid.')';
+	return $self->_peerCommandName( $pid, $commands, $self->{pipe_chain_command_length} ).'('.$pid.')';
 }
 
 #

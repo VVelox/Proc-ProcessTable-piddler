@@ -13,6 +13,7 @@ Display all process table, open files, and network connections for a PID.
 -e <int>  Max number of peers to show. 0 or less shows all. Default is 0.
 -f        Do not show FIFOs.
 -j        Show all the jail info for the jail the process is in.
+-l <int>  Max command length in a pipe chain. 0 or less does not truncate. Default is 40.
 -m        Show memory mapped libraries of the REG type.
 -n        Do not resolve PTR addresses.
 --nc      Disable color.
@@ -30,8 +31,8 @@ The enviromental variables below may be set to set the default for the
 flag in question.
 
 Unless set to defined ands set to 1, these will default to 0. The
-exception is PIDDLER_peer_max, which takes a value rather than being a
-toggle.
+exceptions are PIDDLER_peer_max and PIDDLER_pipe_chain_command_length,
+which take a value rather than being toggles.
 
 | Variable |  Description  |
 | -------- | ---------------- |
@@ -44,6 +45,7 @@ toggle.
 | PIDDLER_memreglib | If set to 1, memory mapped libraries with the type REG will be shown. |
 | PIDDLER_dont_pipe | If set to 1, pipes will not be shown. |
 | PIDDLER_dont_pipe_chains | If set to 1, pipe chains will not be shown. |
+| PIDDLER_pipe_chain_command_length | Sets how long a command may be in a pipe chain before it is truncated, the same as -l, which overrides it when passed. |
 | PIDDLER_txt | If set to 1, libraries with the TXT type will not be shown. |
 | PIDDLER_dont_unix | If set to 1, unix sockets will not be shown. |
 | PIDDLER_dont_peers | If set to 1, pipe, FIFO, unix socket, and SHM peers will not be resolved. |

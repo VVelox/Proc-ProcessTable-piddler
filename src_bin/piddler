@@ -23,6 +23,7 @@ sub help{
 -e <int>  Max number of peers to show. 0 or less shows all. Default is 0.
 -f        Do not show FIFOs.
 -j        Show all the jail info for the jail the process is in.
+-l <int>  Max command length in a pipe chain. 0 or less does not truncate. Default is 40.
 -m        Show memory mapped libraries of the REG type.
 -n        Do not resolve PTR addresses.
 --nc      Disable color.
@@ -33,6 +34,23 @@ sub help{
 -E        Do not resolve pipe, FIFO, unix socket, and SHM peers.
 -H        Do not humanize sizes.
 ';
+	}
+
+# returns the integer the environmental variable named is set to, falling
+# back to the default passed for one that is not set at all
+sub integer_from_env{
+	my $name=$_[0];
+	my $default=$_[1];
+
+	if ( !defined( $ENV{$name} ) ){
+		return $default;
+	}
+
+	if ( $ENV{$name} !~ /^\-?[0-9]+$/ ){
+		die $name.' is set to "'.$ENV{$name}.'", which is not a integer'."\n";
+	}
+
+	return $ENV{$name};
 	}
 
 # defaults
@@ -52,8 +70,9 @@ my $dont_pipe_chains=0;
 my $dont_peers=0;
 my $dont_human_size=0;
 my $jail_info=0;
-# left undefined so the environmental variable may be told apart from the flag
+# left undefined so the environmental variables may be told apart from the flags
 my $peer_max;
+my $pipe_chain_command_length;
 
 # get the commandline options
 Getopt::Long::Configure ('no_ignore_case');
@@ -78,6 +97,7 @@ GetOptions(
 		   'm' => \$memreglib,
 		   'c' => \$dont_pipe_chains,
 		   'j' => \$jail_info,
+		   'l=i' => \$pipe_chain_command_length,
 		   );
 
 # print the version info if requested
@@ -157,16 +177,13 @@ if ( defined( $ENV{PIDDLER_jail_info} ) ){
 if ( defined( $ENV{PIDDLER_dont_resolv} ) ){
 	$dont_resolv = $dont_resolv ^ ( $ENV{PIDDLER_dont_resolv} ? 1 : 0 );
 }
-# -e is a value rather than a toggle, so the environmental variable just
-# sets the default for it, which passing the flag overrides
+# -e and -l are values rather than toggles, so the environmental variables
+# just set the defaults for them, which passing the flags overrides
 if ( !defined( $peer_max ) ){
-	$peer_max=0;
-	if ( defined( $ENV{PIDDLER_peer_max} ) ){
-		if ( $ENV{PIDDLER_peer_max} !~ /^\-?[0-9]+$/ ){
-			die 'PIDDLER_peer_max is set to "'.$ENV{PIDDLER_peer_max}.'", which is not a integer'."\n";
-		}
-		$peer_max=$ENV{PIDDLER_peer_max};
-	}
+	$peer_max=&integer_from_env( 'PIDDLER_peer_max', 0 );
+}
+if ( !defined( $pipe_chain_command_length ) ){
+	$pipe_chain_command_length=&integer_from_env( 'PIDDLER_pipe_chain_command_length', 40 );
 }
 # same for the no color, which per the NO_COLOR spec is any non-empty value
 if (
@@ -200,6 +217,7 @@ my $ppp=Proc::ProcessTable::piddler->new(
 										  peers=>( $dont_peers ? 0 : 1 ),
 										  peer_max=>$peer_max,
 										  jail_info=>$jail_info,
+										  pipe_chain_command_length=>$pipe_chain_command_length,
 										  human_size=>( $dont_human_size ? 0 : 1 ),
 										  }
 										 );
@@ -213,7 +231,7 @@ piddler - Display all process table, open files, and network connections for a P
 
 =head1 SYNOPSIS
 
-piddler [B<-a>] [B<-c>] [B<-d>] [B<-e> <int>] [B<-f>] [B<-j>] [B<-m>] [B<-n>] [B<--nc>] [B<-p>] [B<-r>] [B<-t>] [B<-u>] [B<-E>] [B<-H>] <PID>[,<PID>...]
+piddler [B<-a>] [B<-c>] [B<-d>] [B<-e> <int>] [B<-f>] [B<-j>] [B<-l> <int>] [B<-m>] [B<-n>] [B<--nc>] [B<-p>] [B<-r>] [B<-t>] [B<-u>] [B<-E>] [B<-H>] <PID>[,<PID>...]
 
 piddler [B<-h>|B<--help>]
 
@@ -250,6 +268,20 @@ Do not show FIFOs.
 =head2 -j
 
 Show all the jail info for the jail the process is in, as per L</JAILS>.
+
+=head2 -l <int>
+
+How long a command may be in a pipe chain before it is truncated, with
+B<...> tacked onto the end of it to show that it was.
+
+    ps auxw(4821) | grep -i --line-buffered --color=auto...(4822)
+
+Zero or less does not truncate at all.
+
+Only the pipe chains are touched, the commands shown for the far end of
+a endpoint having a length of their own.
+
+Defaults to 40.
 
 =head2 -m
 
@@ -293,9 +325,10 @@ These are used for XORing the corresponding flags. So setting
 one to 1 has the same effect as passing the flag, and passing
 the flag as well XORs it back off.
 
-The exception is B<PIDDLER_peer_max>, which takes a value rather
-than being a toggle, so it just sets the default for the flag
-it belongs to and passing that flag overrides it.
+The exceptions are B<PIDDLER_peer_max> and
+B<PIDDLER_pipe_chain_command_length>, which take a value rather
+than being toggles, so they just set the default for the flag
+they belong to and passing that flag overrides it.
 
 =head2 NO_COLOR
 
@@ -332,6 +365,11 @@ If set to 1, pipes will not be shown, the same as B<-p>.
 =head2 PIDDLER_dont_pipe_chains
 
 If set to 1, pipe chains will not be shown, the same as B<-c>.
+
+=head2 PIDDLER_pipe_chain_command_length
+
+Sets how long a command may be in a pipe chain before it is
+truncated, the same as B<-l>, which overrides it when passed.
 
 =head2 PIDDLER_dont_unix
 
@@ -375,10 +413,10 @@ B<-c> turns this off.
     PIPE CHAINS
     ps auxw(4821) | grep foo(4822) | wc -l(4823)
 
-Commands longer than 40 characters are truncated. Any process that can
-not be looked up, such as one belonging to another user when not running
-as root, is shown as a ?. A process may sit on more than one pipe, so at
-most 16 chains are shown for any one of them.
+Commands are truncated as per B<-l>. Any process that can not be looked
+up, such as one belonging to another user when not running as root, is
+shown as a ?. A process may sit on more than one pipe, so at most 16
+chains are shown for any one of them.
 
 Tying the two ends of a pipe together requires a system wide lsof, so it
 is only run for processes that actually have a pipe open, and only once
