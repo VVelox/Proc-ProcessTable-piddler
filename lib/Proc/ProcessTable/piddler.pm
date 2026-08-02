@@ -277,10 +277,12 @@ A process forked off of one already holding a pipe is handed a copy of it
 whether it has any use for it or not, and a pool that forks a worker at a
 time ends up with every worker holding a end of every pipe made before
 it. Those are printed as B<inherited> so they are not taken for something
-that was given the pipe to use. A end sitting on stdin, stdout, or stderr
-counts as given either way, a shell wiring the last command of a pipeline
-onto the very descriptor it is holding the pipe on itself, so leaving
-those to the parent would break the chain a hop early.
+that was given the pipe to use. A end sitting on stdin or stdout counts as
+given either way, a shell wiring the last command of a pipeline onto the
+very descriptor it is holding the pipe on itself, so leaving those to the
+parent would break the chain a hop early. Stderr is left out of that, as
+it is the one every child carries off of its parent whether it has any use
+for it or not.
 
 Tying the two ends of a pipe together requires a system wide lsof, so it
 is only run for processes that actually have a pipe open, and only once
@@ -289,8 +291,19 @@ per call to run.
 The direction of a pipe is taken from the r and w access characters when
 lsof reports them. Systems such as FreeBSD report pipes as being open
 read/write instead, in which case the descriptor number is used, 0 being
-the input and 1 and 2 being the output. On those systems that means only
-pipes on stdin, stdout, and stderr may be chained together.
+the input and 1 and 2 being the output.
+
+Those systems also hand each end of a pipe a object of its own and point
+the two at each other, so a end told by a descriptor in the one process is
+that same end everywhere else it is held, and the far end of it goes the
+other way. That is what puts a direction on the ends only ever held on a
+descriptor there is nothing to be read off of, such as the stdin, stdout,
+and stderr a supervisor keeps of everything it started.
+
+    galla --name mail(96264) <-> baphomet start(95432)
+
+A pipe with nothing on either side of it to go on is left out of the
+chains, as are both ends of one with descriptors going both ways.
 
 Defaults to 1, true.
 
@@ -1694,14 +1707,17 @@ sub _pipeHolders{
 		# Sorting the pair puts either end of one under the same key on both.
 		my $key=join( "\0", sort ( $ids->{id}, $ids->{peer_id} ) );
 
-		# A end sitting on stdin, stdout, or stderr was wired there for the
-		# process to use, that being what a shell does when it strings two
-		# commands together, where one on a higher descriptor is as like as
-		# not just a copy it was forked holding. A process may hold the same
-		# end on more than one descriptor, so any one of them being a
-		# standard one is enough.
+		# A end sitting on stdin or stdout was wired there for the process to
+		# use, those being what a shell strings two commands together
+		# through, where one on any other descriptor is as like as not just
+		# a copy it was forked holding. Stderr is left out of it as that is
+		# the one every child carries off of its parent whether it has any
+		# use for it or not, a pack of piped loggers all sharing the stderr
+		# of what started them being the usual sort. A process may hold the
+		# same end on more than one descriptor, so any one of them being
+		# stdin or stdout is enough.
 		my $stdio=0;
-		if ( $file->{fd} =~ /^[0-2][^0-9]*$/ ){
+		if ( $file->{fd} =~ /^[01][^0-9]*$/ ){
 			$stdio=1;
 		}
 		if (
