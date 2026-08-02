@@ -1205,6 +1205,14 @@ sub run{
 													  );
 		$netstat=$ncnetstat->run;
 
+		# the headers are drawn regardless of if there are any connections
+		# to show, so anything amounting to no more than the header row is
+		# tossed as there is nothing worth saying
+		my @netstat_lines=grep( { $_ =~ /\S/ } split( /\n/, $netstat ) );
+		if ( scalar( @netstat_lines ) < 2 ){
+			$netstat='';
+		}
+
 		#
 		# handle the pipe chains
 		#

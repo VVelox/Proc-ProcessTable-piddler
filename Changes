@@ -13,6 +13,8 @@ Revision history for Proc-ProcessTable-piddler
         - Parse lsof field output, so DEVICE is
           now its raw device number.
         - Don't print lsof warnings.
+        - Skip the network connection table when
+          there are no connections.
 
 0.2.0   2019-09-04/00:00
         - Add support for the environ key.
