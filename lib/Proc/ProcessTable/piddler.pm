@@ -723,7 +723,25 @@ sub run{
 					( $key =~ /^environ$/ ) &&
 					( ref( $proc->{environ} ) eq 'ARRAY' )
 					){
-					$value=join( color( $self->{environ} ).', '.color('reset') , @{ $proc->{environ} } );
+					# A process is free to scribble over the memory the kernel
+					# hands this back from, setproctitle and the like using it
+					# for a command line of their own making, which leaves a
+					# pile of empty strings where the environment was.
+					my @environ;
+					foreach my $variable ( @{ $proc->{environ} } ){
+						if (
+							( defined( $variable ) ) &&
+							( $variable !~ /^[\ \t]*$/ )
+							){
+							push( @environ, $variable );
+						}
+					}
+
+					if ( !defined( $environ[0] ) ){
+						$print_it=0;
+					}else{
+						$value=join( color( $self->{environ} ).', '.color('reset') , @environ );
+					}
 				}
 
 				if (
